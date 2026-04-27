@@ -1,0 +1,23 @@
+# Node.js / npm
+webui/node_modules/
+
+# Vite build output
+webui/dist/
+
+# Temp / debug output
+webui/_sse_out.txt
+
+# Gameplay logs (generated content)
+logs/**/*.md
+!logs/*/.gitkeep
+!logs/日志系统说明.md
+
+# IDE
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
