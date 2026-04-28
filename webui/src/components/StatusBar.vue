@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useWorkspaceStore } from '../stores/workspace'
-import { extractStats, isCharacterPath, type CharStats } from '../lib/charsheet'
+import { extractStats, isCharacterPath, parseCharacterSemanticState, type CharStats } from '../lib/charsheet'
 
 const ws = useWorkspaceStore()
 
@@ -13,6 +13,11 @@ const stats = computed<CharStats | null>(() => {
   if (!ws.current) return null
   if (!isCharSheet.value) return null
   return extractStats(ws.current.frontmatter)
+})
+
+const semantic = computed(() => {
+  if (!ws.current || !isCharSheet.value) return null
+  return parseCharacterSemanticState(ws.current.frontmatter, ws.current.content)
 })
 
 const visible = computed(() => !!stats.value)
@@ -126,6 +131,19 @@ const apSegments = computed<{ filled: boolean }[]>(() => {
         <div class="ammo-bar">
           <span v-for="(s, i) in apSegments" :key="i" :class="{ filled: s.filled }"></span>
         </div>
+      </div>
+    </div>
+
+    <div v-if="semantic && (semantic.currentSituation || semantic.unconfirmedRisks.length)" class="min-w-[260px] max-w-[420px] border-l-2 border-paper-200 pl-5">
+      <div v-if="semantic.currentSituation" class="mb-2">
+        <div class="mb-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-500">当前处境</div>
+        <pre class="whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-paper-700">{{ semantic.currentSituation }}</pre>
+      </div>
+      <div v-if="semantic.unconfirmedRisks.length">
+        <div class="mb-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-500">未确认风险</div>
+        <ul class="space-y-1 text-[11px] leading-relaxed text-paper-700">
+          <li v-for="(risk, idx) in semantic.unconfirmedRisks.slice(0, 2)" :key="idx">• {{ risk }}</li>
+        </ul>
       </div>
     </div>
 

@@ -11,12 +11,41 @@
 
 export interface CharStats {
   name?: string
+  controller?: string
   level?: number | string
   hp?: { cur: number; max: number }
   sp?: { cur: number; max: number }
   ap?: number | string
   attributes?: Record<string, number>
   raw: Record<string, unknown>
+}
+
+export interface SafeBoxSlot {
+  label: string
+  item: string
+  empty: boolean
+}
+
+export interface FacilityState {
+  name: string
+  level: number
+}
+
+export interface InventoryEntry {
+  item: string
+  qty?: number
+  raw: string
+}
+
+export interface CharacterSemanticState {
+  summary: CharStats | null
+  concept: string
+  currentSituation: string
+  keyRelations: string[]
+  unconfirmedRisks: string[]
+  safeBox: SafeBoxSlot[]
+  baseInventory: InventoryEntry[]
+  facilities: FacilityState[]
 }
 
 function parseRatio(v: unknown): { cur: number; max: number } | undefined {
@@ -48,6 +77,9 @@ export function extractStats(frontmatter: Record<string, unknown> | null): CharS
 
   const stats: CharStats = { raw: fm }
   if (typeof fm.name === 'string' || typeof fm.name === 'number') stats.name = String(fm.name)
+  if (typeof fm.controller === 'string' && fm.controller.trim()) {
+    stats.controller = fm.controller.trim()
+  }
   if (fm.level != null) stats.level = fm.level as number | string
   const hp = parseRatio(fm.hp)
   if (hp) stats.hp = hp
@@ -63,6 +95,140 @@ export function extractStats(frontmatter: Record<string, unknown> | null): CharS
     if (Object.keys(attrs).length) stats.attributes = attrs
   }
   return stats
+}
+
+export function extractController(frontmatter: Record<string, unknown> | null): string | null {
+  if (!frontmatter || typeof frontmatter.controller !== 'string') return null
+  const trimmed = frontmatter.controller.trim()
+  return trimmed || null
+}
+
+function extractSection(content: string, title: string): string {
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`##\\s*${escaped}[\\s\\S]*?(?=\\n##|\\n---|$)`)
+  const m = content.match(re)
+  return m?.[0] || ''
+}
+
+function collectBulletLines(section: string): string[] {
+  return section
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.replace(/^-\s*/, '').trim())
+    .filter(Boolean)
+}
+
+function extractConcept(content: string): string {
+  const section = extractSection(content, '角色概念')
+  const lines = section
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('##') && !line.startsWith('>') && !line.startsWith('---'))
+  if (lines.length) return lines.slice(0, 6).join('\n').trim()
+  return content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && !line.startsWith('---'))
+    .slice(0, 3)
+    .join('\n')
+    .trim()
+}
+
+function extractCurrentSituation(content: string): string {
+  const section = extractSection(content, '当前处境')
+  const bullets = collectBulletLines(section)
+  if (bullets.length) return bullets.join('\n')
+  return section
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('##') && !line.startsWith('>') && !line.startsWith('---'))
+    .slice(0, 4)
+    .join('\n')
+    .trim()
+}
+
+function extractSubSection(section: string, title: string): string {
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`###\\s*${escaped}[\\s\\S]*?(?=\\n###|\\n##|\\n---|$)`)
+  const m = section.match(re)
+  return m?.[0] || ''
+}
+
+function extractKeyRelations(content: string): string[] {
+  const section = extractSection(content, '动机、关系与压力')
+  const relationSection = extractSubSection(section, '重要关系')
+  const debtSection = extractSubSection(section, '债务 / 承诺 / 挂念')
+  return [...collectBulletLines(relationSection), ...collectBulletLines(debtSection)]
+}
+
+function extractUnconfirmedRisks(content: string): string[] {
+  const section = extractSection(content, '状态与异常')
+  const riskBlock = section.match(/###\s*未确认风险\s*\/\s*可疑迹象[\s\S]*?(?=\n###|\n##|\n---|$)/)
+  return collectBulletLines(riskBlock?.[0] || '')
+}
+
+export function parseCharacterSemanticState(
+  frontmatter: Record<string, unknown> | null,
+  content: string,
+): CharacterSemanticState {
+  const safeBox: SafeBoxSlot[] = []
+  const baseInventory: InventoryEntry[] = []
+  const facilities: FacilityState[] = []
+
+  const facMatches = content.match(/\|\s*(医疗室|工坊|军械库|情报中心|生活区)\s*\|\s*(\d+)\s*\|/g)
+  if (facMatches) {
+    for (const m of facMatches) {
+      const parts = m.split('|').map((s) => s.trim())
+      const name = parts[1]
+      const level = parseInt(parts[2], 10)
+      if (name) facilities.push({ name, level: Number.isNaN(level) ? 0 : level })
+    }
+  }
+
+  const safeBoxSection = content.match(/###\s*安全箱[\s\S]*?(?=\n##|\n---|$)/)
+  if (safeBoxSection) {
+    const lines = safeBoxSection[0].split('\n')
+    for (const l of lines) {
+      const m = l.match(/\|\s*(?:格\s*(\d+)|格(\d+)|(\d+))\s*\|\s*(.+?)\s*\|/)
+      if (!m) continue
+      const labelNum = m[1] || m[2] || m[3] || String(safeBox.length + 1)
+      const item = (m[4] || '').trim()
+      safeBox.push({
+        label: `格${labelNum}`,
+        item,
+        empty: !item || item === '空' || item === '—',
+      })
+    }
+  }
+
+  const invSection = content.match(/###\s*基地库存[\s\S]*?(?=\n##|\n---|$)/)
+  if (invSection) {
+    const lines = invSection[0].split('\n')
+    for (const l of lines) {
+      const m = l.match(/\|\s*(.+?)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|/)
+      if (!m) continue
+      const item = m[1].trim()
+      const qty = parseInt(m[2], 10)
+      if (!item || item === '物品' || item.match(/（空）|^\s*$/)) continue
+      baseInventory.push({
+        item,
+        qty: Number.isNaN(qty) ? undefined : qty,
+        raw: l.trim(),
+      })
+    }
+  }
+
+  return {
+    summary: extractStats(frontmatter),
+    concept: extractConcept(content),
+    currentSituation: extractCurrentSituation(content),
+    keyRelations: extractKeyRelations(content),
+    unconfirmedRisks: extractUnconfirmedRisks(content),
+    safeBox,
+    baseInventory,
+    facilities,
+  }
 }
 
 export function isCharacterPath(p: string): boolean {

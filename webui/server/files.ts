@@ -7,10 +7,10 @@
  *
  * Endpoints:
  *   GET  /api/health                       -> { ok, root }
- *   GET  /api/tree?panel=dm|player         -> filtered directory tree (md only)
- *   GET  /api/file?panel=...&path=<rel>    -> { path, content, frontmatter, size, mtime }
- *   PUT  /api/file?panel=...&path=<rel>    -> body { content }; writes file (creates dirs)
- *   POST /api/round                        -> body { action, character?, prompt? }
+ *   GET  /api/tree?panel=dm|player&player? -> filtered directory tree (md only)
+ *   GET  /api/file?panel=...&path=<rel>&player? -> { path, content, frontmatter, size, mtime }
+ *   PUT  /api/file?panel=...&path=<rel>&player? -> body { content }; writes file (creates dirs)
+ *   POST /api/round                        -> body { panel, kind?, player?, action, character?, forge?, prompt? }
  *                                              starts an opencode round; returns { roundId }
  *   GET  /api/round/stream?id=<roundId>    -> SSE stream of round events
  */
@@ -18,10 +18,16 @@ import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import yaml from 'js-yaml'
-import { startRound, attachStream, type RoundRequest } from './opencode'
+import { startRound, attachStream, runOpencodeProbe, type RoundRequest } from './opencode'
 import { attachDiceRoutes } from './dice'
 
 export type Panel = 'dm' | 'player'
+type RoundKind = 'action' | 'forge'
+
+interface ViewerContext {
+  panel: Panel
+  player?: string
+}
 
 export interface TreeNode {
   name: string
@@ -65,10 +71,7 @@ const VISIBILITY: Record<Panel, { allow: string[]; deny: string[] }> = {
 // Player can only write a small set of files. DM can write anything not denied above.
 const WRITE_ALLOW: Record<Panel, (rel: string) => boolean> = {
   dm: (rel) => isVisible(rel, 'dm'),
-  player: (rel) =>
-    rel === 'playground.md' ||
-    rel.startsWith('characters/active/') ||
-    rel.startsWith('logs/'),
+  player: (rel) => rel === 'playground.md',
 }
 
 const HIDDEN_NAMES = new Set(['.git', '.gitkeep', 'node_modules', '.DS_Store', 'Thumbs.db'])
@@ -91,6 +94,10 @@ function isVisible(relPosix: string, panel: Panel): boolean {
   return false
 }
 
+function isPlayerControlledCharacter(relPosix: string): boolean {
+  return relPosix.startsWith('characters/active/') && relPosix.toLowerCase().endsWith('.md')
+}
+
 function resolveSafe(root: string, rel: string): string | null {
   if (path.isAbsolute(rel)) return null
   const cleaned = rel.replace(/\\/g, '/').replace(/\/+$/g, '')
@@ -101,20 +108,21 @@ function resolveSafe(root: string, rel: string): string | null {
   return abs
 }
 
-async function buildTree(root: string, panel: Panel): Promise<TreeNode> {
+async function buildTree(root: string, viewer: ViewerContext): Promise<TreeNode> {
   async function walk(absDir: string, relPosix: string): Promise<TreeNode> {
     const entries = await fs.readdir(absDir, { withFileTypes: true })
     const children: TreeNode[] = []
     for (const ent of entries) {
       if (HIDDEN_NAMES.has(ent.name)) continue
       const childRel = relPosix ? `${relPosix}/${ent.name}` : ent.name
-      if (!isVisible(childRel, panel)) continue
+      if (!isVisible(childRel, viewer.panel)) continue
       const childAbs = path.join(absDir, ent.name)
       if (ent.isDirectory()) {
         const sub = await walk(childAbs, childRel)
         if (sub.children && sub.children.length > 0) children.push(sub)
       } else if (ent.isFile()) {
         if (!ent.name.toLowerCase().endsWith('.md')) continue
+        if (!(await canAccessRel(root, childRel, viewer))) continue
         children.push({ name: ent.name, path: childRel, type: 'file' })
       }
     }
@@ -152,6 +160,41 @@ function splitFrontmatter(text: string): {
   return { frontmatter: null, body: text }
 }
 
+async function readFrontmatter(abs: string): Promise<Record<string, unknown> | null> {
+  try {
+    const buf = await fs.readFile(abs, 'utf8')
+    return splitFrontmatter(buf).frontmatter
+  } catch {
+    return null
+  }
+}
+
+function extractController(frontmatter: Record<string, unknown> | null): string | null {
+  if (!frontmatter) return null
+  const raw = frontmatter.controller
+  if (typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  return trimmed || null
+}
+
+async function canPlayerAccessCharacter(
+  root: string,
+  rel: string,
+  viewerPlayer?: string,
+): Promise<boolean> {
+  if (!viewerPlayer) return true
+  const abs = resolveSafe(root, rel)
+  if (!abs) return false
+  const frontmatter = await readFrontmatter(abs)
+  return extractController(frontmatter) === viewerPlayer
+}
+
+async function canAccessRel(root: string, rel: string, viewer: ViewerContext): Promise<boolean> {
+  if (!isVisible(rel, viewer.panel)) return false
+  if (viewer.panel !== 'player' || !isPlayerControlledCharacter(rel)) return true
+  return canPlayerAccessCharacter(root, rel, viewer.player)
+}
+
 function sendJSON(res: ServerResponse, status: number, payload: unknown) {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -162,6 +205,15 @@ function sendJSON(res: ServerResponse, status: number, payload: unknown) {
 function parsePanel(url: URL): Panel {
   const v = url.searchParams.get('panel')
   return v === 'dm' ? 'dm' : 'player'
+}
+
+function parseViewer(url: URL): ViewerContext {
+  const panel = parsePanel(url)
+  const rawPlayer = (url.searchParams.get('player') || '').trim()
+  return {
+    panel,
+    player: panel === 'player' && rawPlayer ? rawPlayer : undefined,
+  }
 }
 
 async function readJsonBody(req: IncomingMessage, max = 4 * 1024 * 1024): Promise<any> {
@@ -209,19 +261,25 @@ export function filesMiddleware(workspaceRoot: string) {
         return sendJSON(res, 200, { ok: true, root })
       }
 
+      // ---------- POST /opencode/probe ----------
+      if (req.method === 'POST' && route === '/opencode/probe') {
+        const result = await runOpencodeProbe(root)
+        return sendJSON(res, result.ok ? 200 : 502, result)
+      }
+
       // ---------- GET /tree ----------
       if (req.method === 'GET' && route === '/tree') {
-        const panel = parsePanel(url)
-        const tree = await buildTree(root, panel)
-        return sendJSON(res, 200, { panel, tree })
+        const viewer = parseViewer(url)
+        const tree = await buildTree(root, viewer)
+        return sendJSON(res, 200, { panel: viewer.panel, player: viewer.player || null, tree })
       }
 
       // ---------- GET /file ----------
       if (req.method === 'GET' && route === '/file') {
-        const panel = parsePanel(url)
+        const viewer = parseViewer(url)
         const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '')
         if (!rel) return sendJSON(res, 400, { error: 'missing path' })
-        if (!isVisible(rel, panel)) return sendJSON(res, 403, { error: 'forbidden' })
+        if (!(await canAccessRel(root, rel, viewer))) return sendJSON(res, 403, { error: 'forbidden' })
         const abs = resolveSafe(root, rel)
         if (!abs) return sendJSON(res, 400, { error: 'invalid path' })
         try {
@@ -245,11 +303,11 @@ export function filesMiddleware(workspaceRoot: string) {
 
       // ---------- PUT /file ----------
       if (req.method === 'PUT' && route === '/file') {
-        const panel = parsePanel(url)
+        const viewer = parseViewer(url)
         const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '')
         if (!rel) return sendJSON(res, 400, { error: 'missing path' })
-        if (!isVisible(rel, panel)) return sendJSON(res, 403, { error: 'forbidden' })
-        if (!WRITE_ALLOW[panel](rel))
+        if (!(await canAccessRel(root, rel, viewer))) return sendJSON(res, 403, { error: 'forbidden' })
+        if (!WRITE_ALLOW[viewer.panel](rel))
           return sendJSON(res, 403, { error: 'write not allowed for this panel' })
         if (!rel.toLowerCase().endsWith('.md'))
           return sendJSON(res, 400, { error: 'only .md files writable' })
@@ -287,17 +345,34 @@ export function filesMiddleware(workspaceRoot: string) {
         } catch (e: any) {
           return sendJSON(res, 400, { error: e?.message || 'invalid body' })
         }
+        const panel: Panel = body?.panel === 'dm' ? 'dm' : 'player'
+        const kind: RoundKind = body?.kind === 'forge' ? 'forge' : 'action'
+        const player = typeof body?.player === 'string' ? body.player.trim() : ''
         const action: string = (body?.action || '').toString()
         const character: string | undefined = body?.character
-        const customPrompt: string | undefined = body?.prompt
+        const customPrompt: string | undefined =
+          panel === 'dm' && typeof body?.prompt === 'string' ? body.prompt : undefined
+        const forge =
+          kind === 'forge' && body?.forge && typeof body.forge === 'object' ? body.forge : undefined
         if (!action.trim() && !customPrompt?.trim()) {
           return sendJSON(res, 400, { error: 'missing action or prompt' })
         }
+        if (
+          panel === 'player' &&
+          character &&
+          !(await canAccessRel(root, character, { panel, player: player || undefined }))
+        ) {
+          return sendJSON(res, 403, { error: 'character not accessible for this player' })
+        }
         const r: RoundRequest = {
           workspaceRoot: root,
+          panel,
+          kind,
+          player: player || undefined,
           action,
           character,
           customPrompt,
+          forge,
         }
         const { roundId } = startRound(r)
         return sendJSON(res, 200, { roundId })
@@ -314,9 +389,9 @@ export function filesMiddleware(workspaceRoot: string) {
 
       // ---------- GET /raw ----------
       if (req.method === 'GET' && route === '/raw') {
-        const panel = parsePanel(url)
+        const viewer = parseViewer(url)
         const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '')
-        if (!isVisible(rel, panel)) return sendJSON(res, 403, { error: 'forbidden' })
+        if (!(await canAccessRel(root, rel, viewer))) return sendJSON(res, 403, { error: 'forbidden' })
         const abs = resolveSafe(root, rel)
         if (!abs) return sendJSON(res, 400, { error: 'invalid path' })
         res.statusCode = 200

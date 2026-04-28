@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { fetchFile, fetchTree, type FilePayload, type TreeNode } from '../lib/api'
+import { usePlayerStore } from './players'
 
 export type Panel = 'dm' | 'player'
 
@@ -33,6 +34,11 @@ export const useWorkspaceStore = defineStore('workspace', {
     fileError: null,
   }),
   actions: {
+    currentPlayerQuery() {
+      if (this.panel !== 'player') return undefined
+      const ply = usePlayerStore()
+      return ply.currentName || undefined
+    },
     async setPanel(p: Panel) {
       if (this.panel === p) return
       this.panel = p
@@ -52,7 +58,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.treeLoading = true
       this.treeError = null
       try {
-        const { tree } = await fetchTree(this.panel)
+        const { tree } = await fetchTree(this.panel, { player: this.currentPlayerQuery() })
         this.tree = tree
       } catch (e: any) {
         this.treeError = e?.message || String(e)
@@ -66,7 +72,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.fileError = null
       this.currentPath = relPath
       try {
-        this.current = await fetchFile(this.panel, relPath)
+        this.current = await fetchFile(this.panel, relPath, { player: this.currentPlayerQuery() })
       } catch (e: any) {
         this.fileError = e?.message || String(e)
         this.current = null

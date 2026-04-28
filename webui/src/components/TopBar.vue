@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useWorkspaceStore, type Panel } from '../stores/workspace'
+import { probeOpencode, type OpencodeProbeResult } from '../lib/api'
 
 const ws = useWorkspaceStore()
+const probing = ref(false)
+const probeError = ref<string | null>(null)
+const probeResult = ref<OpencodeProbeResult | null>(null)
 
 const tabs: { id: Panel; label: string; sub: string; accent: string }[] = [
   { id: 'dm', label: 'DM 视图', sub: 'GAME MASTER', accent: 'navy' },
@@ -22,6 +26,26 @@ function goHome() {
   if (ws.panel !== 'player') return
   ws.goHome()
 }
+
+async function runProbe() {
+  probing.value = true
+  probeError.value = null
+  try {
+    probeResult.value = await probeOpencode()
+  } catch (e: any) {
+    probeError.value = e?.message || String(e)
+    probeResult.value = null
+  } finally {
+    probing.value = false
+  }
+}
+
+const probeLabel = computed(() => {
+  if (probing.value) return '检测中...'
+  if (probeError.value) return 'FAIL'
+  if (probeResult.value?.ok) return 'OK'
+  return '自检'
+})
 </script>
 
 <template>
@@ -89,23 +113,47 @@ function goHome() {
       </button>
     </nav>
 
-    <!-- Breadcrumb -->
-    <div class="flex min-w-0 max-w-[40%] items-center gap-1 truncate font-mono text-xs">
-      <span v-if="!breadcrumb.length" class="text-paper-500">— 未选择文件 —</span>
-      <template v-else>
-        <span
-          v-for="(seg, i) in breadcrumb"
-          :key="i"
-          class="truncate"
-          :class="
-            i === breadcrumb.length - 1
-              ? 'font-bold text-crimson-700'
-              : 'text-paper-600'
-          "
+    <div class="flex min-w-0 max-w-[40%] items-center gap-3">
+      <!-- Breadcrumb -->
+      <div class="flex min-w-0 flex-1 items-center gap-1 truncate font-mono text-xs">
+        <span v-if="!breadcrumb.length" class="text-paper-500">— 未选择文件 —</span>
+        <template v-else>
+          <span
+            v-for="(seg, i) in breadcrumb"
+            :key="i"
+            class="truncate"
+            :class="
+              i === breadcrumb.length - 1
+                ? 'font-bold text-crimson-700'
+                : 'text-paper-600'
+            "
+          >
+            {{ seg }}<span v-if="i < breadcrumb.length - 1" class="px-1 text-paper-400">/</span>
+          </span>
+        </template>
+      </div>
+
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          @click="runProbe"
+          :disabled="probing"
+          class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition hover:border-crimson-600 hover:text-crimson-700 disabled:opacity-50"
         >
-          {{ seg }}<span v-if="i < breadcrumb.length - 1" class="px-1 text-paper-400">/</span>
+          opencode {{ probeLabel }}
+        </button>
+        <span
+          v-if="probeResult?.ok"
+          class="rounded-sm bg-forest-600 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white"
+        >
+          {{ probeResult.stdout.includes('OK') ? 'OK' : 'PASS' }}
         </span>
-      </template>
+        <span
+          v-else-if="probeError"
+          class="rounded-sm bg-crimson-600 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white"
+        >
+          FAIL
+        </span>
+      </div>
     </div>
 
     <!-- Crimson accent strip -->

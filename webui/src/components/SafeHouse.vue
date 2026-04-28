@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { fetchFile, type FilePayload } from '../lib/api'
+import { isCharacterPath, parseCharacterSemanticState, type SafeBoxSlot } from '../lib/charsheet'
 import { useWorkspaceStore } from '../stores/workspace'
+import { usePlayerStore } from '../stores/players'
 
 const ws = useWorkspaceStore()
+const ply = usePlayerStore()
 
 interface Facility { name: string; level: number; maxLevel: number; icon: string; desc: string }
-interface SafeBoxSlot { label: string; item: string; empty: boolean }
 interface NPC { name: string; relation: string; note: string }
 
 const loading = ref(false)
@@ -34,105 +36,90 @@ async function load() {
   loading.value = true
   err.value = null
   try {
-    // Look for active character file to parse base/facility data
-    const chars = ['characters/active/示例_铁鼠.md']
-    for (const cp of chars) {
-      try {
-        charData.value = await fetchFile('player', cp)
-        hasChar.value = true
-        parseCharSheet(charData.value.content)
-        break
-      } catch {
-        continue
-      }
+    const targetPath = ws.current && isCharacterPath(ws.current.path)
+      ? ws.current.path
+      : ply.currentCharacterPath
+
+    if (!targetPath) {
+      hasChar.value = false
+      charData.value = null
+      safeBox.value = []
+      baseInventory.value = []
+      return
     }
-    if (!charData.value) hasChar.value = false
+
+    charData.value = await fetchFile('player', targetPath, { player: ply.currentName })
+    hasChar.value = true
+    applyCharacterState(charData.value)
   } catch (e: any) {
+    hasChar.value = false
     err.value = e?.message || String(e)
   } finally {
     loading.value = false
   }
 }
 
-function parseCharSheet(content: string) {
-  // Parse base facilities
-  const facMatches = content.match(/\|\s*(医疗室|工坊|军械库|情报中心|生活区)\s*\|\s*(\d+)\s*\|/g)
-  if (facMatches) {
-    const newF: Facility[] = []
-    for (const m of facMatches) {
-      const parts = m.split('|').map((s) => s.trim())
-      const name = parts[1]
-      const level = parseInt(parts[2], 10)
-      const existing = facilities.value.find((f) => f.name === name)
-      newF.push(existing
-        ? { ...existing, level: Number.isNaN(level) ? 0 : level }
-        : { name, level: 0, maxLevel: 3, icon: '?', desc: '' })
-    }
-    if (newF.length) facilities.value = newF
+function applyCharacterState(payload: FilePayload) {
+  const parsed = parseCharacterSemanticState(payload.frontmatter, payload.content)
+
+  if (parsed.facilities.length) {
+    facilities.value = parsed.facilities.map((f) => {
+      const existing = facilities.value.find((it) => it.name === f.name)
+      return existing
+        ? { ...existing, level: f.level }
+        : { name: f.name, level: f.level, maxLevel: 3, icon: '?', desc: '' }
+    })
   }
 
-  // Parse safe box
-  safeBox.value = []
-  const sbSection = content.match(/###\s*安全箱[\s\S]*?(?=\n##|\n---|$)/)
-  if (sbSection) {
-    const lines = sbSection[0].split('\n')
-    for (const l of lines) {
-      const m = l.match(/\|\s*(?:格\d+|(\d+))\s*\|\s*(.+?)\s*\|/)
-      if (m) {
-        const item = m[2]?.trim() || ''
-        safeBox.value.push({ label: m[1] || String(safeBox.value.length + 1), item, empty: !item || item === '空' || item === '—' })
-      }
-    }
-  }
-  if (safeBox.value.length === 0) {
-    safeBox.value = [
-      { label: '格1', item: '弟弟的照片（任务物品）', empty: false },
-      { label: '格2', item: '空', empty: true },
-    ]
-  }
+  safeBox.value = parsed.safeBox.length
+    ? parsed.safeBox
+    : [
+        { label: '格1', item: '弟弟的照片（任务物品）', empty: false },
+        { label: '格2', item: '空', empty: true },
+      ]
 
-  // Parse base inventory
-  baseInventory.value = []
-  const invSection = content.match(/###\s*基地库存[\s\S]*?(?=\n##|\n---|$)/)
-  if (invSection) {
-    const lines = invSection[0].split('\n')
-    for (const l of lines) {
-      const m = l.match(/\|\s*(.+?)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|/)
-      if (m && m[1].trim() && m[1].trim() !== '物品' && !m[1].match(/（空）|^\s*$/)) {
-        baseInventory.value.push(`${m[1].trim()} ×${m[2].trim()}`)
-      }
-    }
-  }
+  baseInventory.value = parsed.baseInventory.map((entry) =>
+    entry.qty != null ? `${entry.item} ×${entry.qty}` : entry.item,
+  )
 }
 
 const levelPct = (f: Facility) => `${(f.level / f.maxLevel) * 100}%`
 const levelDots = (f: Facility) => Array.from({ length: f.maxLevel }, (_, i) => i < f.level)
 
 onMounted(load)
+watch(() => ws.currentPath, () => {
+  load()
+})
+watch(() => ply.currentCharacterPath, () => {
+  load()
+})
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-paper-50">
+  <div class="clash-grid-accent flex h-full flex-col bg-paper-100">
     <!-- Header -->
-    <div class="flex items-center justify-between gap-3 border-b-2 border-paper-950 bg-white px-4 py-2">
+    <div class="clash-toolbar flex items-center justify-between gap-3 px-4 py-2">
       <div class="flex items-center gap-2">
         <div class="flex h-7 w-7 items-center justify-center rounded-sm bg-ochre-600 font-mono text-xs font-bold text-white">⌂</div>
         <div>
-          <div class="font-serif text-sm font-bold text-paper-950">围栏基地</div>
-          <div class="font-mono text-[9px] uppercase tracking-[0.2em] text-paper-500">FENCE OUTPOST</div>
+          <div class="font-serif text-sm font-bold text-white">围栏基地</div>
+          <div class="font-mono text-[9px] uppercase tracking-[0.2em] text-white/60">FENCE OUTPOST</div>
         </div>
       </div>
       <div class="flex items-center gap-2">
         <span class="live-dot" v-if="!loading && !err"></span>
-        <span class="font-mono text-[10px] text-paper-500">藏身处</span>
+        <span class="font-mono text-[10px] text-white/75">藏身处</span>
       </div>
     </div>
 
     <div v-if="loading" class="p-4 font-mono text-xs text-paper-500">读取角色数据...</div>
     <div v-else-if="err" class="m-3 rounded border-l-4 border-crimson-600 bg-crimson-50 px-3 py-2 font-mono text-xs text-crimson-700">{{ err }}</div>
+    <div v-else-if="!hasChar" class="m-3 rounded border border-dashed border-paper-300 bg-white px-4 py-3 text-sm text-paper-500">
+      当前玩家还没有绑定角色档案，先去「创角」生成一份正式档案。
+    </div>
     <div v-else class="min-h-0 flex-1 overflow-y-auto p-3 space-y-3">
       <!-- Facilities -->
-      <div class="hud-frame">
+      <div class="hud-frame clash-panel ochre p-4">
         <span class="corner-bl"></span><span class="corner-br"></span>
         <div class="brief-heading !mb-3 !text-sm">设施升级</div>
         <div class="space-y-2">
@@ -159,7 +146,7 @@ onMounted(load)
       </div>
 
       <!-- Safe box -->
-      <div class="hud-frame">
+      <div class="hud-frame clash-panel navy p-4">
         <span class="corner-bl"></span><span class="corner-br"></span>
         <div class="flex items-center justify-between mb-2">
           <div class="brief-heading !mb-0 !text-sm">安全箱</div>
@@ -179,7 +166,7 @@ onMounted(load)
 
       <!-- Inventory + NPCs row -->
       <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div class="hud-frame">
+        <div class="hud-frame clash-panel p-4">
           <span class="corner-bl"></span><span class="corner-br"></span>
           <div class="brief-heading !mb-2 !text-sm">基地库存</div>
           <div v-if="baseInventory.length === 0" class="font-mono text-[11px] text-paper-500 italic">无库存物品</div>
@@ -192,7 +179,7 @@ onMounted(load)
           </ul>
         </div>
 
-        <div class="hud-frame">
+        <div class="hud-frame clash-panel forest p-4">
           <span class="corner-bl"></span><span class="corner-br"></span>
           <div class="brief-heading !mb-2 !text-sm">围栏联系人</div>
           <div class="space-y-2">
@@ -215,7 +202,7 @@ onMounted(load)
       </div>
 
       <!-- Base quick actions -->
-      <div class="hud-frame">
+      <div class="hud-frame clash-panel navy p-4">
         <span class="corner-bl"></span><span class="corner-br"></span>
         <div class="brief-heading !mb-2 !text-sm">基地行动</div>
         <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
