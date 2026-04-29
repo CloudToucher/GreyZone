@@ -1,0 +1,9 @@
+version: 1
+title: Gray Zone Table
+ruleset: gray-zone
+ownerSeat: DM
+phase: idle
+currentRoundId: null
+sharedBoardPath: table/shared_board.md
+createdAt: 2026-04-29T00:00:00.000Z
+updatedAt: 2026-04-29T00:00:00.000Z
