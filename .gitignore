@@ -7,9 +7,7 @@ webui/dist/
 # Temp / debug output
 webui/_sse_out.txt
 
-# Gameplay logs (generated content)
-logs/**/*.md
-!logs/*/.gitkeep
+# Gameplay logs — tracked for analysis across machines
 !logs/日志系统说明.md
 
 # IDE
