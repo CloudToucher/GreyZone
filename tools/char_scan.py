@@ -1,5 +1,5 @@
 import os
-import sys
+import yaml
 
 
 def scan_characters(project_root):
@@ -17,44 +17,48 @@ def scan_characters(project_root):
         print("暂无活跃角色。")
         return
 
-    print("=== 角色状态摘要 ===\n")
+    print("=== 角色状态摘要 (v4 D20) ===\n")
     for fname in files:
         fpath = os.path.join(active_dir, fname)
         with open(fpath, "r", encoding="utf-8") as f:
             content = f.read()
 
-        name = ""
-        hp = "?"
-        max_hp = "?"
-        sp = "?"
-        max_sp = "?"
-        lv = "?"
-        location = "?"
-        status = ""
+        # Parse YAML frontmatter
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    fm = yaml.safe_load(parts[1])
+                except Exception:
+                    fm = {}
+            else:
+                fm = {}
+        else:
+            fm = {}
 
-        for line in content.split("\n"):
-            line = line.strip()
-            if line.startswith("| 姓名") and "|" in line:
-                parts = [p.strip() for p in line.split("|")]
-                name = parts[2] if len(parts) > 2 else ""
-            if "HP |" in line or "生命值 |" in line:
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) >= 5:
-                    hp = parts[3] if parts[3] else "?"
-                    max_hp = parts[4] if parts[4] else "?"
-            if "SP |" in line or "体力值 |" in line:
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) >= 5:
-                    sp = parts[3] if parts[3] else "?"
-                    max_sp = parts[4] if parts[4] else "?"
-            if "等级" in line and "|" in line:
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) >= 3:
-                    lv = parts[2] if parts[2] else "?"
+        name = fm.get("name", fname.replace(".md", ""))
+        lv = fm.get("level", "?")
+        xp = fm.get("xp", "?")
 
-        name = name or fname.replace(".md", "")
-        print(f"角色：{name} | HP: {hp}/{max_hp} | SP: {sp}/{max_sp}")
-        print(f"  等级：Lv{lv}\n")
+        blood = fm.get("blood", {})
+        blood_t = blood.get("total", "?")
+        blood_l = blood.get("light", 0)
+        blood_s = blood.get("severe", 0)
+        blood_h = blood_t - blood_l - blood_s if isinstance(blood_t, int) else "?"
+
+        energy = fm.get("energy", {})
+        energy_c = energy.get("current", "?")
+        energy_m = energy.get("max", "?")
+
+        mods = fm.get("modifiers", {})
+        str_m = mods.get("STR", "?")
+        agi_m = mods.get("AGI", "?")
+
+        print(f"角色：{name} | Lv{lv} | XP: {xp}")
+        print(f"  血槽: H:{blood_h}/L:{blood_l}/S:{blood_s} (总{blood_t})")
+        print(f"  能量: {energy_c}/{energy_m}")
+        print(f"  属性修正: STR{str_m:+d} AGI{agi_m:+d}" if isinstance(str_m, int) else f"  属性: N/A")
+        print()
 
 
 def main():

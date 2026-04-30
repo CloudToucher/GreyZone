@@ -1,7 +1,7 @@
-# 灰区：撤离 — Gray Zone: Extraction v3
+# 灰区：撤离 — Gray Zone: Extraction v4
 
 > 一个以异能+装备战斗、开放探索、高风险撤离为核心的战术TRPG。
-> AI DM 驱动的非线性世界。有真实后果的每次突袭。
+> **D20引擎**。AI DM 驱动的非线性世界。有真实后果的每次突袭。
 
 ---
 
