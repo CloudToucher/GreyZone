@@ -1,9 +1,9 @@
 version: 1
-title: Gray Zone Table
+title: Gray Zone Table - 黑潮
 ruleset: gray-zone
 ownerSeat: DM
 phase: idle
 currentRoundId: null
 sharedBoardPath: table/shared_board.md
-createdAt: 2026-04-29T00:00:00.000Z
-updatedAt: 2026-04-29T00:00:00.000Z
+createdAt: 2037-03-15T08:00:00.000Z
+updatedAt: 2037-03-15T08:00:00.000Z

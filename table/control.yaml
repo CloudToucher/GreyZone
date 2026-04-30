@@ -1,9 +1,9 @@
 version: 1
 bindings:
-  - characterPath: characters/active/示例_铁鼠.md
-    label: 铁手
-    primarySeat: 铁鼠
+  - characterPath: characters/active/赵大勇.md
+    label: 老赵
+    primarySeat: S1
     dmHosted: false
     visibleTo:
-      - 铁鼠
+      - S1
     pendingTransfer: null

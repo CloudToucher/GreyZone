@@ -7,24 +7,10 @@ seats:
     status: idle
     online: false
     lastSeenAt: null
-  - name: 铁鼠
+  - name: S1
     role: player
     occupied: false
     tokenHash: null
     status: idle
     online: false
     lastSeenAt: null
-  - name: 芜湖
-    role: player
-    occupied: true
-    tokenHash: e6a5b1022382f991600c1ef5e0ca2fc9fbdb122531742c5435793ca9ec4f690d
-    status: idle
-    online: true
-    lastSeenAt: '2026-04-29T02:37:01.587Z'
-  - name: S1
-    role: player
-    occupied: true
-    tokenHash: 7f220fe8499058af2dfadc939336b326793a26823f404faf9735bd5f030dc3c0
-    status: idle
-    online: true
-    lastSeenAt: '2026-04-29T02:37:09.889Z'
