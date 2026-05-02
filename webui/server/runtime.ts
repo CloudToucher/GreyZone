@@ -3,6 +3,7 @@ import type { ServerResponse } from 'node:http'
 export interface RuntimeViewer {
   seatName: string
   role: 'dm' | 'player'
+  dmEnabled?: boolean
 }
 
 export interface VisibleRoundState {
@@ -69,7 +70,7 @@ function publicRound(round: RoundState): VisibleRoundState {
 
 export function getVisibleRound(viewer: RuntimeViewer): VisibleRoundState | null {
   if (!activeRound) return null
-  if (viewer.role === 'dm') return { ...publicRound(activeRound), logs: activeRound.logs.slice(-200) }
+  if (viewer.role === 'dm' || viewer.dmEnabled) return { ...publicRound(activeRound), logs: activeRound.logs.slice(-200) }
   return publicRound(activeRound)
 }
 

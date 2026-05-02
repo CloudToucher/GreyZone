@@ -14,3 +14,11 @@ seats:
     status: idle
     online: false
     lastSeenAt: null
+  - name: 习风
+    role: player
+    occupied: true
+    tokenHash: 3ebc3ac82b3020e117f0f7cf61912e36676d2046c4749a6490fe9548c152ac62
+    status: idle
+    online: true
+    lastSeenAt: '2026-05-02T17:36:10.912Z'
+    dmEnabled: true

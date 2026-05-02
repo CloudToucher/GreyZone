@@ -8,6 +8,7 @@ import {
   buildTree,
   canWritePath,
   createRoundPacket,
+  enableDmConsole,
   ensureTableState,
   joinSeat,
   loadIntentForSeat,
@@ -57,9 +58,18 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
 }
 
 function viewerHeaders(req: IncomingMessage) {
-  const seatName = String(req.headers['x-gz-seat'] || '').trim()
+  const rawSeatName = String(req.headers['x-gz-seat'] || '').trim()
+  const seatName = rawSeatName ? safeDecodeURIComponent(rawSeatName) : ''
   const token = String(req.headers['x-gz-token'] || '').trim()
   return { seatName, token }
+}
+
+function safeDecodeURIComponent(value: string) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
 }
 
 async function requireViewer(root: string, req: IncomingMessage, res: ServerResponse): Promise<ViewerSession | null> {
@@ -80,6 +90,17 @@ function parseRelative(url: URL) {
   return (url.searchParams.get('path') || '').replace(/^\/+/, '').replace(/\\/g, '/')
 }
 
+function roomCodeForSeat(root: string, seatName: string) {
+  const roomCode = process.env.GZ_ROOM_CODE?.trim()
+  return roomCode
+}
+
+function validateRoomCode(root: string, seatName: string, roomCode: unknown) {
+  const expected = roomCodeForSeat(root, seatName)
+  if (!expected) return true
+  return typeof roomCode === 'string' && roomCode.trim() === expected
+}
+
 export function filesMiddleware(workspaceRoot: string) {
   const root = path.resolve(workspaceRoot)
   return async function handle(req: IncomingMessage, res: ServerResponse, next: (err?: any) => void) {
@@ -89,10 +110,12 @@ export function filesMiddleware(workspaceRoot: string) {
       const route = url.pathname
 
       if (req.method === 'GET' && route === '/health') {
-        return sendJson(res, 200, { ok: true, root })
+        return sendJson(res, 200, { ok: true })
       }
 
       if (req.method === 'POST' && route === '/opencode/probe') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
         const result = await runOpencodeProbe(root)
         return sendJson(res, result.ok ? 200 : 502, result)
       }
@@ -101,6 +124,9 @@ export function filesMiddleware(workspaceRoot: string) {
         const body = await readJsonBody(req)
         const name = typeof body?.name === 'string' ? body.name : ''
         const token = typeof body?.token === 'string' ? body.token : undefined
+        if (!validateRoomCode(root, name, body?.roomCode)) {
+          return sendJson(res, 403, { error: 'invalid room code' })
+        }
         try {
           const session = await joinSeat(root, name, token)
           emitSnapshotRefresh('seat-joined')
@@ -120,10 +146,24 @@ export function filesMiddleware(workspaceRoot: string) {
         return sendJson(res, 200, { ok: true })
       }
 
+      if (req.method === 'POST' && route === '/session/enable-dm') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const roomCode = typeof body?.roomCode === 'string' ? body.roomCode : ''
+        try {
+          const session = await enableDmConsole(root, viewer, roomCode)
+          emitSnapshotRefresh('dm-console-enabled')
+          return sendJson(res, 200, { session })
+        } catch (error: any) {
+          return sendJson(res, 403, { error: error?.message || 'failed to enable dm console' })
+        }
+      }
+
       if (req.method === 'GET' && route === '/session/snapshot') {
         const viewer = await requireViewer(root, req, res)
         if (!viewer) return
-        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role }))
+        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled }))
         return sendJson(res, 200, snapshot)
       }
 
@@ -132,8 +172,8 @@ export function filesMiddleware(workspaceRoot: string) {
         const token = String(url.searchParams.get('token') || '').trim()
         const viewer = seatName && token ? await authenticateViewer(root, seatName, token) : null
         if (!viewer) return sendJson(res, 401, { error: 'invalid session' })
-        attachEventsStream(res, { seatName: viewer.seatName, role: viewer.role })
-        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role }))
+        attachEventsStream(res, { seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled })
+        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled }))
         res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)
         return
       }

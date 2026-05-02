@@ -13,6 +13,17 @@ export interface CharStats {
   name?: string
   controller?: string
   level?: number | string
+  xp?: number | string
+  blood?: {
+    total: number
+    light: number
+    severe: number
+    narrative?: string
+  }
+  energy?: {
+    current: number
+    max: number
+  }
   hp?: { cur: number; max: number }
   sp?: { cur: number; max: number }
   ap?: number | string
@@ -66,13 +77,37 @@ function parseRatio(v: unknown): { cur: number; max: number } | undefined {
   return undefined
 }
 
+function parseBlood(v: unknown): CharStats['blood'] | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const obj = v as Record<string, unknown>
+  const total = Number(obj.total ?? obj.max ?? obj.current ?? obj.cur)
+  const light = Number(obj.light ?? obj.soft ?? 0)
+  const severe = Number(obj.severe ?? obj.heavy ?? 0)
+  if (Number.isNaN(total)) return undefined
+  return {
+    total,
+    light: Number.isNaN(light) ? 0 : light,
+    severe: Number.isNaN(severe) ? 0 : severe,
+    narrative: typeof obj.narrative === 'string' ? obj.narrative : undefined,
+  }
+}
+
+function parseEnergy(v: unknown): CharStats['energy'] | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const obj = v as Record<string, unknown>
+  const current = Number(obj.current ?? obj.cur ?? obj.now)
+  const max = Number(obj.max ?? obj.maximum ?? obj.total)
+  if (Number.isNaN(current) || Number.isNaN(max)) return undefined
+  return { current, max }
+}
+
 export function extractStats(frontmatter: Record<string, unknown> | null): CharStats | null {
   if (!frontmatter) return null
   const fm = frontmatter
 
   // Heuristic: only treat this as a char-sheet frontmatter if it looks like one
   const hasCharSignal =
-    'hp' in fm || 'sp' in fm || 'attributes' in fm || 'level' in fm || 'name' in fm
+    'blood' in fm || 'energy' in fm || 'hp' in fm || 'sp' in fm || 'attributes' in fm || 'level' in fm || 'name' in fm || 'controller' in fm || 'xp' in fm
   if (!hasCharSignal) return null
 
   const stats: CharStats = { raw: fm }
@@ -81,6 +116,11 @@ export function extractStats(frontmatter: Record<string, unknown> | null): CharS
     stats.controller = fm.controller.trim()
   }
   if (fm.level != null) stats.level = fm.level as number | string
+  if (fm.xp != null) stats.xp = fm.xp as number | string
+  const blood = parseBlood(fm.blood)
+  if (blood) stats.blood = blood
+  const energy = parseEnergy(fm.energy)
+  if (energy) stats.energy = energy
   const hp = parseRatio(fm.hp)
   if (hp) stats.hp = hp
   const sp = parseRatio(fm.sp)

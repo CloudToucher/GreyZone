@@ -17,6 +17,7 @@ export interface SessionCredentials {
   seatName: string
   role: 'dm' | 'player'
   token: string
+  dmEnabled?: boolean
 }
 
 export interface IntentSections {
@@ -42,6 +43,17 @@ export interface CharacterSummary {
   currentSituation: string
   stats: {
     level?: string | number
+    xp?: string | number
+    blood?: {
+      total: number
+      light: number
+      severe: number
+      narrative?: string
+    }
+    energy?: {
+      current: number
+      max: number
+    }
     hp?: string
     sp?: string
     ap?: string | number
@@ -77,6 +89,7 @@ export interface RoomSnapshot {
   viewer: {
     seatName: string
     role: 'dm' | 'player'
+    dmEnabled?: boolean
   }
   seats: Array<{
     name: string
@@ -118,6 +131,7 @@ export interface VisibleRoundState {
 }
 
 export interface ForgePayload {
+  name?: string
   concept?: string
   identity?: string
   motivation?: string
@@ -137,6 +151,12 @@ export interface OpencodeProbeResult {
   stderr: string
   model: string
   title: string
+  command: string
+  xdgConfigHome: string
+  timedOut: boolean
+  durationMs: number
+  error?: string
+  diagnosis?: string
 }
 
 export interface DiceStats {
@@ -149,7 +169,7 @@ export interface DiceStats {
 function authHeaders(session?: SessionCredentials) {
   const headers: Record<string, string> = {}
   if (session) {
-    headers['x-gz-seat'] = session.seatName
+    headers['x-gz-seat'] = encodeURIComponent(session.seatName)
     headers['x-gz-token'] = session.token
   }
   return headers
@@ -184,12 +204,16 @@ async function sendJson<T>(url: string, method: 'POST' | 'PUT', body: unknown, s
   return parseJson<T>(res)
 }
 
-export async function joinRoom(name: string, token?: string) {
-  return sendJson<{ session: SessionCredentials }>('/api/session/join', 'POST', { name, token })
+export async function joinRoom(name: string, token?: string, roomCode?: string) {
+  return sendJson<{ session: SessionCredentials }>('/api/session/join', 'POST', { name, token, roomCode })
 }
 
 export async function releaseSeatSession(session: SessionCredentials, seatName: string) {
   return sendJson<{ ok: true }>('/api/session/release', 'POST', { seatName }, session)
+}
+
+export async function enableDmConsoleSession(session: SessionCredentials, roomCode: string) {
+  return sendJson<{ session: SessionCredentials }>('/api/session/enable-dm', 'POST', { roomCode }, session)
 }
 
 export async function fetchSnapshot(session: SessionCredentials) {
@@ -261,8 +285,21 @@ export async function saveFileSession(session: SessionCredentials, relPath: stri
   return sendJson<{ ok: true }>(`/api/file?path=${encodeURIComponent(relPath)}`, 'PUT', { content }, session)
 }
 
-export async function probeOpencode() {
-  return sendJson<OpencodeProbeResult>('/api/opencode/probe', 'POST', {})
+export async function probeOpencode(session: SessionCredentials) {
+  const res = await fetch('/api/opencode/probe', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(session),
+    },
+    body: JSON.stringify({}),
+  })
+  const data = await res.json().catch(() => null) as OpencodeProbeResult | { error?: string } | null
+  if (!res.ok) {
+    if (data && 'ok' in data) return data as OpencodeProbeResult
+    throw new Error(data?.error || `${res.status} ${res.statusText}`)
+  }
+  return data as OpencodeProbeResult
 }
 
 export function openEvents(

@@ -20,6 +20,12 @@ export interface OpencodeProbeResult {
   stderr: string
   model: string
   title: string
+  command: string
+  xdgConfigHome: string
+  timedOut: boolean
+  durationMs: number
+  error?: string
+  diagnosis?: string
 }
 
 const DEFAULT_MODEL = process.env.GZ_OPENCODE_MODEL || 'deepseek/deepseek-v4-pro'
@@ -80,6 +86,30 @@ function buildRunArgs(workspaceRoot: string, title: string, prompt: string) {
   return args
 }
 
+function diagnoseOpencodeFailure(stderr: string, stdout: string, error?: string) {
+  const text = `${error || ''}\n${stderr}\n${stdout}`
+  if (/uv_spawn 'git'|uv_spawn "git"|operation not permitted.*git|EPERM.*git/is.test(text)) {
+    return [
+      'opencode 已找到，但启动时被禁止调用 git。',
+      '这通常发生在受限沙箱里；在正常启动的 Vite/浏览器进程外运行时一般不会复现。',
+      '如果是在本机 UI 自检中出现，请确认 git.exe 在 PATH 中且安全软件没有拦截子进程。',
+    ].join('\n')
+  }
+  if (/EEXIST: file already exists, mkdir .*\.config\\opencode/is.test(text)) {
+    return [
+      'opencode 默认配置目录存在异常。',
+      '本项目会把 XDG_CONFIG_HOME 固定到工作区 .opencode-runtime；请通过 webui 启动，不要直接裸跑 opencode。',
+    ].join('\n')
+  }
+  if (/not recognized|ENOENT|no such file|cannot find/i.test(text)) {
+    return '没有找到 opencode 可执行文件。可在 webui/.env 中设置 GZ_OPENCODE_BIN 指向 opencode.exe。'
+  }
+  if (/unauthorized|api key|token|auth/i.test(text)) {
+    return 'opencode 启动了，但模型认证失败。请检查 opencode 的 provider/API key 配置。'
+  }
+  return undefined
+}
+
 function title(kind: string, viewer: ViewerSession) {
   const stamp = new Date().toLocaleString('zh-CN', {
     hour12: false,
@@ -97,10 +127,11 @@ export async function runOpencodeProbe(workspaceRoot: string): Promise<OpencodeP
   const launch = await resolveOpencodeCommand()
   const probeTitle = title('probe', { seatName: 'DM', role: 'dm', token: '' })
   const args = ['run', '-m', DEFAULT_MODEL, '--dir', workspaceRoot, '--title', probeTitle, '--pure', 'Reply exactly OK.']
-  if (ENABLE_PRINT_LOGS) args.splice(3, 0, '--print-logs')
-  if (ENABLE_THINKING) args.splice(ENABLE_PRINT_LOGS ? 4 : 3, 0, '--thinking')
+  if (process.env.GZ_OPENCODE_PROBE_PRINT_LOGS === '1') args.splice(3, 0, '--print-logs')
+  const startedAt = Date.now()
+  const timeoutMs = Number(process.env.GZ_OPENCODE_PROBE_TIMEOUT_MS || 90000)
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const proc = spawn(launch.command, args, {
       cwd: workspaceRoot,
       windowsHide: true,
@@ -118,16 +149,42 @@ export async function runOpencodeProbe(workspaceRoot: string): Promise<OpencodeP
     proc.stderr.on('data', (chunk: string) => {
       stderr += chunk
     })
-    proc.on('error', reject)
-    proc.on('close', (code) => {
+    let settled = false
+    let timedOut = false
+    const finish = (code: number | null, error?: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const ok = !timedOut && !error && code === 0 && /\bOK\b/.test(stdout)
       resolve({
-        ok: code === 0 && /\bOK\b/.test(stdout),
+        ok,
         code,
         stdout,
         stderr,
         model: DEFAULT_MODEL,
         title: probeTitle,
+        command: launch.command,
+        xdgConfigHome: String(env.XDG_CONFIG_HOME || ''),
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        error,
+        diagnosis: ok ? undefined : diagnoseOpencodeFailure(stderr, stdout, error),
       })
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        proc.kill()
+      } catch {
+        /* ignore */
+      }
+      finish(null, `opencode probe timed out after ${timeoutMs}ms`)
+    }, timeoutMs)
+    proc.on('error', (error) => {
+      finish(null, error.message)
+    })
+    proc.on('close', (code) => {
+      finish(code)
     })
   })
 }
@@ -137,6 +194,7 @@ export async function runForgeRound(args: {
   viewer: ViewerSession
   roundId: string
   forge: {
+    name?: string
     concept?: string
     identity?: string
     motivation?: string
@@ -149,7 +207,7 @@ export async function runForgeRound(args: {
     fileHint?: string
   }
 }) {
-  const outputFile = sanitizeFileStem(args.forge.fileHint || args.viewer.seatName)
+  const outputFile = sanitizeFileStem(args.forge.name || args.forge.fileHint || args.viewer.seatName)
   const outputPath = `characters/active/${outputFile}.md`
   const packetPath = `table/rounds/${args.roundId}/packet.md`
   const resultPath = `table/rounds/${args.roundId}/result.md`
@@ -235,6 +293,15 @@ async function startProcess(args: {
   })
   await markRoomRunning(args.workspaceRoot, args.roundId)
   appendRoundLog('meta', `Launching opencode for ${args.kind} round ${args.roundId}`)
+  await appendConversationIndex(args.workspaceRoot, {
+    roundId: args.roundId,
+    kind: args.kind,
+    status: 'running',
+    title: runTitle,
+    participantSeats: args.participantSeats,
+    packetPath: args.packetPath,
+    resultPath: args.resultPath,
+  })
 
   const proc = spawn(launch.command, runArgs, {
     cwd: args.workspaceRoot,
@@ -258,9 +325,20 @@ async function startProcess(args: {
   })
   proc.on('error', async (error) => {
     appendRoundLog('meta', `Process error: ${error.message}`)
-    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), stderr || error.message, 'utf8')
+    const diagnosis = diagnoseOpencodeFailure(stderr, stdout, error.message)
+    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), [stderr || error.message, diagnosis ? `\n\n## 启动诊断\n${diagnosis}` : ''].join(''), 'utf8')
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
+    await appendConversationIndex(args.workspaceRoot, {
+      roundId: args.roundId,
+      kind: args.kind,
+      status: 'error',
+      title: runTitle,
+      participantSeats: args.participantSeats,
+      packetPath: args.packetPath,
+      resultPath: args.resultPath,
+      error: diagnosis || error.message,
+    })
     finishRound({
       status: 'error',
       endedAt: new Date().toISOString(),
@@ -273,9 +351,23 @@ async function startProcess(args: {
 
   proc.on('close', async (code) => {
     const endedAt = new Date().toISOString()
-    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), stdout || stderr || '(no output)', 'utf8')
+    const diagnosis = code === 0 ? undefined : diagnoseOpencodeFailure(stderr, stdout)
+    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), [
+      stdout || stderr || '(no output)',
+      diagnosis ? `\n\n## 启动诊断\n${diagnosis}` : '',
+    ].join(''), 'utf8')
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
+    await appendConversationIndex(args.workspaceRoot, {
+      roundId: args.roundId,
+      kind: args.kind,
+      status: code === 0 ? 'done' : 'error',
+      title: runTitle,
+      participantSeats: args.participantSeats,
+      packetPath: args.packetPath,
+      resultPath: args.resultPath,
+      error: code === 0 ? undefined : diagnosis || stderr || `opencode exited with code ${code}`,
+    })
     finishRound({
       status: code === 0 ? 'done' : 'error',
       endedAt,
@@ -285,4 +377,41 @@ async function startProcess(args: {
       affectedFiles: [args.packetPath, args.resultPath],
     })
   })
+}
+
+async function appendConversationIndex(workspaceRoot: string, entry: {
+  roundId: string
+  kind: 'action' | 'forge'
+  status: 'running' | 'done' | 'error'
+  title: string
+  participantSeats: string[]
+  packetPath: string
+  resultPath: string
+  error?: string
+}) {
+  const indexPath = path.join(workspaceRoot, 'table', 'conversations.md')
+  const exists = await fs.stat(indexPath).catch(() => null)
+  if (!exists) {
+    await fs.mkdir(path.dirname(indexPath), { recursive: true })
+    await fs.writeFile(indexPath, [
+      '# 游戏对话索引',
+      '',
+      '这里记录 WebUI 发起的 opencode 会话。每次创建角色和行动回合都会留下回合包、结果文件和参与席位，方便回看调用链。',
+      '',
+    ].join('\n'), 'utf8')
+  }
+
+  const lines = [
+    `## ${new Date().toLocaleString('zh-CN', { hour12: false })} - ${entry.kind === 'forge' ? '创建角色' : '行动回合'} - ${entry.status}`,
+    '',
+    `- round_id: ${entry.roundId}`,
+    `- title: ${entry.title}`,
+    `- seats: ${entry.participantSeats.join(', ') || '(none)'}`,
+    `- packet: ${entry.packetPath}`,
+    `- result: ${entry.resultPath}`,
+    entry.error ? `- error: ${entry.error.replace(/\s+/g, ' ').slice(0, 240)}` : '',
+    '',
+  ].filter(Boolean)
+
+  await fs.appendFile(indexPath, `${lines.join('\n')}\n`, 'utf8')
 }

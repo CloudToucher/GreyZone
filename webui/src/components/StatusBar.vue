@@ -23,9 +23,10 @@ const semantic = computed(() => {
 const visible = computed(() => !!stats.value)
 const showSheetHint = computed(() => isCharSheet.value && !stats.value)
 
-function pct(b?: { cur: number; max: number }) {
+function pct(b?: { cur?: number; current?: number; max: number }) {
   if (!b || b.max <= 0) return 0
-  return Math.max(0, Math.min(100, (b.cur / b.max) * 100))
+  const cur = b.cur ?? b.current ?? 0
+  return Math.max(0, Math.min(100, (cur / b.max) * 100))
 }
 
 // Build a 12-segment ammo bar for AP visualization (game-style)
@@ -91,47 +92,92 @@ const apSegments = computed<{ filled: boolean }[]>(() => {
       </div>
     </div>
 
-    <!-- HP / SP -->
+    <!-- Blood / Energy -->
     <div class="flex flex-1 flex-wrap gap-5">
-      <div v-if="stats.hp" class="min-w-[200px] flex-1">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="stamp text-crimson-700">HP · 生命值</span>
-          <span class="font-mono text-xs font-bold text-paper-800">
-            {{ stats.hp.cur }} <span class="text-paper-400">/</span> {{ stats.hp.max }}
-          </span>
+      <template v-if="stats.blood || stats.energy">
+        <div v-if="stats.blood" class="min-w-[220px] flex-1">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="stamp text-crimson-700">BLOOD · 血槽</span>
+            <span class="font-mono text-xs font-bold text-paper-800">
+              {{ stats.blood.total }}
+            </span>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <div class="rounded-sm border border-paper-300 bg-white px-2 py-1 text-center">
+              <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">总量</div>
+              <div class="font-mono text-sm font-bold text-paper-950">{{ stats.blood.total }}</div>
+            </div>
+            <div class="rounded-sm border border-paper-300 bg-white px-2 py-1 text-center">
+              <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">轻伤</div>
+              <div class="font-mono text-sm font-bold text-ochre-700">{{ stats.blood.light }}</div>
+            </div>
+            <div class="rounded-sm border border-paper-300 bg-white px-2 py-1 text-center">
+              <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">重伤</div>
+              <div class="font-mono text-sm font-bold text-crimson-700">{{ stats.blood.severe }}</div>
+            </div>
+          </div>
+          <div v-if="stats.blood.narrative" class="mt-1 text-[11px] leading-relaxed text-paper-600">
+            {{ stats.blood.narrative }}
+          </div>
         </div>
-        <div class="h-2.5 w-full overflow-hidden rounded-sm border border-paper-300 bg-paper-100">
-          <div
-            class="h-full bg-gradient-to-r from-crimson-700 to-crimson-500 transition-all"
-            :style="{ width: pct(stats.hp) + '%' }"
-          />
-        </div>
-      </div>
 
-      <div v-if="stats.sp" class="min-w-[200px] flex-1">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="stamp text-forest-700">SP · 体力值</span>
-          <span class="font-mono text-xs font-bold text-paper-800">
-            {{ stats.sp.cur }} <span class="text-paper-400">/</span> {{ stats.sp.max }}
-          </span>
+        <div v-if="stats.energy" class="min-w-[200px] flex-1">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="stamp text-forest-700">ENERGY · 能量</span>
+            <span class="font-mono text-xs font-bold text-paper-800">
+              {{ stats.energy.current }} <span class="text-paper-400">/</span> {{ stats.energy.max }}
+            </span>
+          </div>
+          <div class="h-2.5 w-full overflow-hidden rounded-sm border border-paper-300 bg-paper-100">
+            <div
+              class="h-full bg-gradient-to-r from-forest-700 to-forest-400 transition-all"
+              :style="{ width: pct(stats.energy) + '%' }"
+            />
+          </div>
         </div>
-        <div class="h-2.5 w-full overflow-hidden rounded-sm border border-paper-300 bg-paper-100">
-          <div
-            class="h-full bg-gradient-to-r from-forest-700 to-forest-400 transition-all"
-            :style="{ width: pct(stats.sp) + '%' }"
-          />
-        </div>
-      </div>
+      </template>
 
-      <div v-if="stats.ap != null" class="min-w-[120px]">
-        <div class="mb-1 flex items-center justify-between">
-          <span class="stamp text-navy-800">AP · 行动</span>
-          <span class="font-mono text-xs font-bold text-navy-800">{{ stats.ap }}</span>
+      <template v-else>
+        <div v-if="stats.hp" class="min-w-[200px] flex-1">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="stamp text-crimson-700">HP · 生命值</span>
+            <span class="font-mono text-xs font-bold text-paper-800">
+              {{ stats.hp.cur }} <span class="text-paper-400">/</span> {{ stats.hp.max }}
+            </span>
+          </div>
+          <div class="h-2.5 w-full overflow-hidden rounded-sm border border-paper-300 bg-paper-100">
+            <div
+              class="h-full bg-gradient-to-r from-crimson-700 to-crimson-500 transition-all"
+              :style="{ width: pct(stats.hp) + '%' }"
+            />
+          </div>
         </div>
-        <div class="ammo-bar">
-          <span v-for="(s, i) in apSegments" :key="i" :class="{ filled: s.filled }"></span>
+
+        <div v-if="stats.sp" class="min-w-[200px] flex-1">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="stamp text-forest-700">SP · 体力值</span>
+            <span class="font-mono text-xs font-bold text-paper-800">
+              {{ stats.sp.cur }} <span class="text-paper-400">/</span> {{ stats.sp.max }}
+            </span>
+          </div>
+          <div class="h-2.5 w-full overflow-hidden rounded-sm border border-paper-300 bg-paper-100">
+            <div
+              class="h-full bg-gradient-to-r from-forest-700 to-forest-400 transition-all"
+              :style="{ width: pct(stats.sp) + '%' }"
+            />
+          </div>
         </div>
-      </div>
+
+        <div v-if="stats.ap != null" class="min-w-[120px]">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="stamp text-navy-800">AP · 行动</span>
+            <span class="font-mono text-xs font-bold text-navy-800">{{ stats.ap }}</span>
+          </div>
+          <div class="ammo-bar">
+            <span v-for="(s, i) in apSegments" :key="i" :class="{ filled: s.filled }"></span>
+          </div>
+        </div>
+      </template>
     </div>
 
     <div v-if="semantic && (semantic.currentSituation || semantic.unconfirmedRisks.length)" class="min-w-[260px] max-w-[420px] border-l-2 border-paper-200 pl-5">

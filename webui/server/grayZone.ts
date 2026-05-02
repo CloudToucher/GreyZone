@@ -1,5 +1,4 @@
 import { promises as fs } from 'node:fs'
-import path from 'node:path'
 import yaml from 'js-yaml'
 
 export interface CharacterSummary {
@@ -11,6 +10,17 @@ export interface CharacterSummary {
   currentSituation: string
   stats: {
     level?: string | number
+    xp?: string | number
+    blood?: {
+      total: number
+      light: number
+      severe: number
+      narrative?: string
+    }
+    energy?: {
+      current: number
+      max: number
+    }
     hp?: string
     sp?: string
     ap?: string | number
@@ -33,7 +43,7 @@ function splitFrontmatter(text: string): {
       return { frontmatter: data as Record<string, unknown>, body }
     }
   } catch {
-    /* ignore */
+    /* ignore invalid frontmatter */
   }
   return { frontmatter: null, body: text }
 }
@@ -58,8 +68,34 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
   try {
     const content = await fs.readFile(absPath, 'utf8')
     const { frontmatter, body } = splitFrontmatter(content)
+
+    const blood = (() => {
+      if (!frontmatter?.blood || typeof frontmatter.blood !== 'object') return undefined
+      const obj = frontmatter.blood as Record<string, unknown>
+      const total = Number(obj.total ?? obj.max ?? obj.current ?? obj.cur)
+      if (Number.isNaN(total)) return undefined
+      return {
+        total,
+        light: Number(obj.light ?? 0) || 0,
+        severe: Number(obj.severe ?? 0) || 0,
+        narrative: typeof obj.narrative === 'string' ? obj.narrative : undefined,
+      }
+    })()
+
+    const energy = (() => {
+      if (!frontmatter?.energy || typeof frontmatter.energy !== 'object') return undefined
+      const obj = frontmatter.energy as Record<string, unknown>
+      const current = Number(obj.current ?? obj.cur ?? obj.now)
+      const max = Number(obj.max ?? obj.maximum ?? obj.total)
+      if (Number.isNaN(current) || Number.isNaN(max)) return undefined
+      return { current, max }
+    })()
+
     const stats = {
       level: frontmatter?.level as string | number | undefined,
+      xp: frontmatter?.xp as string | number | undefined,
+      blood,
+      energy,
       hp: frontmatter?.hp ? String(frontmatter.hp) : undefined,
       sp: frontmatter?.sp ? String(frontmatter.sp) : undefined,
       ap: frontmatter?.ap as string | number | undefined,
@@ -95,6 +131,7 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
 export function createForgePrompt(args: {
   seatName: string
   outputPath: string
+  name?: string
   concept?: string
   identity?: string
   motivation?: string
@@ -106,57 +143,74 @@ export function createForgePrompt(args: {
   extraNotes?: string
 }) {
   return [
-    '# Gray Zone Character Forge Request',
+    '# 灰区：撤离 - 创建角色新会话',
     '',
-    'You are the AI DM for a file-backed TRPG workspace.',
-    'Create a new playable character for the current player, write it into the requested file, and keep the result fully compatible with markdown + YAML frontmatter.',
+    '你是《灰区：撤离》的 AI DM。当前是一次独立的“创建角色”会话，不是行动回合。',
+    '你的目标是把玩家的自然语言概念整理成一份可以直接投入游戏的角色运行档案，并写入指定文件。',
     '',
-    '## Required write target',
+    '## 必须写入的角色卡',
     args.outputPath,
     '',
-    '## Hard requirements',
-    `- Write the file at \`${args.outputPath}\`.`,
-    `- Set frontmatter \`controller: ${args.seatName}\`.`,
-    '- Include frontmatter fields: name, controller, level, hp, sp, ap, attributes.',
-    '- Use the existing Gray Zone character style and headings so the UI can extract summary, situation, and stats.',
-    '- Keep the character playable, specific, and ready to enter the world immediately.',
+    '## 先读取',
+    '- dm_guide/启动注入_AI_DM.md 中“角色创建”和“状态写回”相关段落',
+    '- characters/templates/角色卡模板.md',
+    '- characters/templates/角色生成指南.md',
+    '- table/shared_board.md',
     '',
-    '## Player concept',
+    '## 创建角色会话规则',
+    '- 这是新角色的新会话：不要继承其他角色的隐私、装备、伤势或历史状态。',
+    '- 可以读取世界公开背景和角色模板；不要全量展开场景、敌人和剧情文件，除非角色概念明确触发。',
+    '- 玩家没有给足细节时，替玩家做保守、可玩的裁定，不要把问题退回成表单。',
+    '- 初始强度、装备、代价、关系和安全箱必须与《灰区：撤离》世界相容。',
+    '',
+    '## 硬性要求',
+    `- Write the file at \`${args.outputPath}\`.`,
+    `- Set frontmatter \`name: ${args.name?.trim() || '(choose a name that fits the character)'}\`.`,
+    `- Set frontmatter \`controller: ${args.seatName}\`.`,
+    '- Include frontmatter fields: name, controller, level, xp, blood, energy, attributes.',
+    '- 正文必须包含“角色概念”和“当前处境”两个二级标题，方便界面提取摘要。',
+    '- 角色卡中写清装备、安全箱、背包、关系、弱点/代价、当前地点和下一步可行动方向。',
+    '- 如修改共享局面，只能写公开信息到 table/shared_board.md。',
+    '',
+    '## 玩家给出的角色名',
+    args.name?.trim() || '(not provided)',
+    '',
+    '## 角色概念',
     args.concept?.trim() || '(not provided)',
     '',
-    '## Identity / background',
+    '## 身份 / 背景',
     args.identity?.trim() || '(not provided)',
     '',
-    '## Motivation / desired play direction',
+    '## 动机 / 想玩的方向',
     args.motivation?.trim() || '(not provided)',
     '',
-    '## Desired starting strength',
+    '## 期望初始强度',
     args.strength?.trim() || '(not provided)',
     '',
-    '## Desired tone',
+    '## 故事调性',
     args.storyTone?.trim() || '(not provided)',
     '',
-    '## Signature wish',
+    '## 标志性愿望',
     args.signatureWish?.trim() || '(not provided)',
     '',
-    '## Acceptable weaknesses / costs',
+    '## 可接受弱点 / 代价',
     args.weaknesses?.trim() || '(not provided)',
     '',
-    '## Boundaries',
+    '## 内容边界',
     args.boundaries?.trim() || '(not provided)',
     '',
-    '## Extra notes',
+    '## 补充说明',
     args.extraNotes?.trim() || '(not provided)',
     '',
-    '## Response format',
-    'After writing the file, reply with markdown headings in this order:',
-    '## Character Concept',
-    '## Initial State',
-    '## Starting Equipment',
-    '## Strengths',
-    '## Costs And Risks',
-    '## Current Situation',
-    '## Written File',
+    '## 回复格式',
+    '写完文件后，用以下标题回复，便于玩家阅读和回合索引追踪：',
+    '## 角色概念',
+    '## 初始状态',
+    '## 初始装备',
+    '## 强项',
+    '## 代价与风险',
+    '## 当前处境',
+    '## 已写入文件',
   ].join('\n')
 }
 
@@ -166,30 +220,36 @@ export function createRoundPrompt(args: {
   sharedBoardPath: string
 }) {
   return [
-    '# Gray Zone Single-Room TRPG Round',
+    '# 灰区：撤离 - 行动回合会话',
     '',
-    'You are the AI DM operating inside a file-backed TRPG room.',
+    '你是《灰区：撤离》的 AI DM，正在处理一次文件落盘的行动回合。',
+    '本次 opencode run 是一个新的执行会话，但必须通过回合包、共享看板、角色卡和 DM 速记承接游戏连续性。',
     '',
-    '## Read first',
-    '- rules/00_规则速查索引.md',
-    '- dm_guide/DM核心手册.md',
+    '## 先读取',
+    '- dm_guide/启动注入_AI_DM.md',
+    '- dm_guide/DM速记_备忘.md 顶部局面卡',
+    '- rules/公式速查卡.md',
+    `- ${args.sharedBoardPath}`,
     `- ${args.packetPath}`,
+    '- table/intents/DM.md 仅当回合包包含隐藏行动、DM 私密备注或需要主持人托管判断时读取',
     '',
-    '## Your job',
-    '- Resolve the current round based on the packet and visible world state.',
-    '- Update any affected character files when confirmed state changes occur.',
-    `- Update ${args.sharedBoardPath} with the public-facing round summary and current public board state.`,
-    `- Write the player-facing round result to ${args.resultPath}.`,
-    '- Do not edit control or seat assignment files unless the packet explicitly asks for it.',
+    '## 你的工作',
+    '- 根据回合包里的玩家公开行动、私密意图、长期目标、触发条件和角色卡来裁定本轮。',
+    '- 只读取当前行动真正需要的规则、NPC、场景或物品文件；不要全量扫描资料库。',
+    '- 发生已确认的伤势、能量、装备、位置、关系、任务进度变化时，回写对应角色卡。',
+    `- 更新 ${args.sharedBoardPath}：只写玩家角色可见或已公开确认的信息。`,
+    `- 将玩家可读的本轮结果写入 ${args.resultPath}。`,
+    '- 不要编辑 table/control.yaml 或 table/seats.yaml，除非回合包明确要求处理控制权。',
+    '- 不要向玩家可见输出泄露暗骰、NPC 内心、未遭遇真相或其他角色未知信息。',
     '',
-    '## Result file contract',
-    'Write markdown headings in this order:',
-    '## Scene Progression',
-    '## Rulings',
-    '## Confirmed Changes',
-    '## New Information',
-    '## Next Directions',
+    '## 结果文件合同',
+    '结果文件必须使用以下标题，方便后续 AI 和玩家追踪：',
+    '## 场景推进',
+    '## 裁定',
+    '## 已确认变化',
+    '## 新信息',
+    '## 下一步方向',
     '',
-    'Keep the result readable for players and useful for later AI turns.',
+    '保持结果既能直接给玩家读，又能作为下一轮 AI DM 的可靠摘要。',
   ].join('\n')
 }

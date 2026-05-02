@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useWorkspaceStore, type Panel } from '../stores/workspace'
-import { probeOpencode, type OpencodeProbeResult } from '../lib/api'
+import type { OpencodeProbeResult } from '../lib/api'
 
 const ws = useWorkspaceStore()
 const probing = ref(false)
@@ -29,15 +29,9 @@ function goHome() {
 
 async function runProbe() {
   probing.value = true
-  probeError.value = null
-  try {
-    probeResult.value = await probeOpencode()
-  } catch (e: any) {
-    probeError.value = e?.message || String(e)
-    probeResult.value = null
-  } finally {
-    probing.value = false
-  }
+  probeError.value = '请先进入房间，再从房间顶部栏运行 opencode 自检'
+  probeResult.value = null
+  probing.value = false
 }
 
 const probeLabel = computed(() => {

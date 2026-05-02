@@ -9,6 +9,7 @@ export interface ViewerSession {
   seatName: string
   role: 'dm' | 'player'
   token: string
+  dmEnabled?: boolean
 }
 
 export interface SeatRecord {
@@ -19,6 +20,7 @@ export interface SeatRecord {
   status: 'idle' | 'ready' | 'submitted' | 'locked'
   online: boolean
   lastSeenAt: string | null
+  dmEnabled?: boolean
 }
 
 export interface PendingTransfer {
@@ -86,7 +88,7 @@ export interface VisibleFile {
 
 export interface RoomSnapshot {
   room: RoomState
-  viewer: { seatName: string; role: 'dm' | 'player' }
+  viewer: { seatName: string; role: 'dm' | 'player'; dmEnabled?: boolean }
   seats: Array<{
     name: string
     role: 'dm' | 'player'
@@ -127,10 +129,12 @@ const ROUNDS_DIR = `${TABLE_DIR}/rounds`
 const PUBLIC_DOCS = new Set([
   'README.md',
   '开始游戏.md',
+  '一句话开局.md',
+  '先看这里.md',
   'playground.md',
 ])
 
-const PUBLIC_PREFIXES = ['rules', 'assets/items']
+const PUBLIC_PREFIXES = ['rules', 'assets/items', 'characters/templates']
 const PLAYER_HIDDEN_PREFIXES = ['dm_guide', 'scenes', 'story', 'assets/enemies', 'assets/npcs', 'tools', 'webui', '.git', 'node_modules']
 const DM_HIDDEN_PREFIXES = ['webui', '.git', 'node_modules']
 
@@ -208,16 +212,16 @@ async function listCharacterFiles(root: string) {
 
 function defaultSharedBoard() {
   return [
-    '# Shared Board',
+    '# 共享看板',
     '',
-    '## Public Situation',
-    '- The room is initialized. DM can update this board each round.',
+    '## 公开局面',
+    '- 房间已初始化。DM 会在每轮后更新这里。',
     '',
-    '## Current Focus',
-    '- Waiting for player submissions.',
+    '## 当前焦点',
+    '- 等待玩家提交行动或创建角色。',
     '',
-    '## Recent Confirmed Changes',
-    '- None yet.',
+    '## 最近确认变化',
+    '- 暂无。',
     '',
   ].join('\n')
 }
@@ -334,7 +338,14 @@ async function saveSeats(root: string, seats: SeatsFile) {
 }
 
 async function loadControl(root: string) {
-  return readYamlFile<ControlFile>(absolute(root, CONTROL_FILE))
+  const abs = absolute(root, CONTROL_FILE)
+  const data = await readYamlFile<ControlFile | null>(abs).catch(() => null)
+  if (data && typeof data === 'object' && Array.isArray(data.bindings)) {
+    return data as ControlFile
+  }
+  const fallback: ControlFile = { version: 1, bindings: [] }
+  await writeYamlFile(abs, fallback)
+  return fallback
 }
 
 async function saveControl(root: string, control: ControlFile) {
@@ -473,6 +484,7 @@ export async function authenticateViewer(root: string, seatName: string, token: 
     seatName: seat.name,
     role: seat.role,
     token,
+    dmEnabled: Boolean(seat.dmEnabled),
   } satisfies ViewerSession
 }
 
@@ -487,10 +499,6 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
   const nextToken = providedToken?.trim() || randomUUID()
   const nextHash = tokenHash(nextToken)
 
-  if (seat?.tokenHash && seat.tokenHash !== nextHash) {
-    throw new Error('Seat already occupied')
-  }
-
   if (!seat) {
     seat = {
       name: seatName,
@@ -500,6 +508,7 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
       status: 'idle',
       online: true,
       lastSeenAt: nowIso(),
+      dmEnabled: seatName === room.ownerSeat,
     }
     seatsFile.seats.push(seat)
   } else {
@@ -507,6 +516,9 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
     seat.tokenHash = nextHash
     seat.online = true
     seat.lastSeenAt = nowIso()
+    if (typeof seat.dmEnabled !== 'boolean') {
+      seat.dmEnabled = seat.name === room.ownerSeat
+    }
   }
 
   await saveSeats(root, seatsFile)
@@ -519,11 +531,32 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
     seatName: seat.name,
     role: seat.role,
     token: nextToken,
+    dmEnabled: Boolean(seat.dmEnabled),
+  } satisfies ViewerSession
+}
+
+export async function enableDmConsole(root: string, viewer: ViewerSession, roomCode: string) {
+  const expected = process.env.GZ_DM_CODE?.trim()
+  if (!expected) throw new Error('DM 控制台口令未配置')
+  if (roomCode.trim() !== expected) throw new Error('DM 控制台口令不正确')
+
+  const seatsFile = await loadSeats(root)
+  const seat = seatsFile.seats.find((entry) => entry.name === viewer.seatName)
+  if (!seat) throw new Error('Seat not found')
+  seat.dmEnabled = true
+  seat.lastSeenAt = nowIso()
+  await saveSeats(root, seatsFile)
+
+  return {
+    seatName: seat.name,
+    role: seat.role,
+    token: viewer.token,
+    dmEnabled: true,
   } satisfies ViewerSession
 }
 
 export async function releaseSeat(root: string, viewer: ViewerSession, seatName: string) {
-  if (viewer.role !== 'dm') throw new Error('Only DM can release seats')
+  if (!viewer.dmEnabled && viewer.role !== 'dm') throw new Error('Only DM can release seats')
   const seatsFile = await loadSeats(root)
   const seat = seatsFile.seats.find((entry) => entry.name === seatName)
   if (!seat) throw new Error('Seat not found')
@@ -568,7 +601,7 @@ export async function assignControl(root: string, viewer: ViewerSession, args: {
   dmHosted: boolean
   requireAccept?: boolean
 }) {
-  if (viewer.role !== 'dm') throw new Error('Only DM can assign control')
+  if (!viewer.dmEnabled && viewer.role !== 'dm') throw new Error('Only DM can assign control')
   const controlFile = await loadControl(root)
   const binding = controlFile.bindings.find((entry) => entry.characterPath === args.characterPath)
   if (!binding) throw new Error('Character binding not found')
@@ -631,7 +664,7 @@ async function canSeeCharacter(root: string, viewer: ViewerSession, rel: string)
   const controlFile = await loadControl(root)
   const binding = controlFile.bindings.find((entry) => entry.characterPath === rel)
   if (!binding) return false
-  if (viewer.role === 'dm') return true
+  if (viewer.role === 'dm' || viewer.dmEnabled) return true
   if (binding.primarySeat === viewer.seatName) return true
   return binding.visibleTo.includes(viewer.seatName)
 }
@@ -643,9 +676,10 @@ function hiddenByRole(role: 'dm' | 'player', rel: string) {
 
 export async function canReadPath(root: string, viewer: ViewerSession, rel: string) {
   const normalized = rel.replace(/^\/+/, '').replace(/\\/g, '/')
+  const effectiveRole = viewer.role === 'dm' || viewer.dmEnabled ? 'dm' : viewer.role
   if (!normalized) return false
-  if (hiddenByRole(viewer.role, normalized)) return false
-  if (viewer.role === 'dm') return true
+  if (hiddenByRole(effectiveRole, normalized)) return false
+  if (effectiveRole === 'dm') return true
   if (isPublicPath(normalized)) return true
   if (normalized === SHARED_BOARD_FILE) return true
   if (normalized.startsWith(`${ROUNDS_DIR}/`) && normalized.endsWith('/result.md')) return true
@@ -658,8 +692,8 @@ export async function canReadPath(root: string, viewer: ViewerSession, rel: stri
 
 export async function canWritePath(root: string, viewer: ViewerSession, rel: string) {
   const normalized = rel.replace(/^\/+/, '').replace(/\\/g, '/')
-  if (!(await canReadPath(root, viewer, normalized)) && viewer.role !== 'dm') return false
-  if (viewer.role === 'dm') return true
+  if (!(await canReadPath(root, viewer, normalized)) && viewer.role !== 'dm' && !viewer.dmEnabled) return false
+  if (viewer.role === 'dm' || viewer.dmEnabled) return true
   return normalized === relPath(INTENTS_DIR, `${sanitizeFileStem(viewer.seatName)}.md`)
 }
 
@@ -689,6 +723,7 @@ export async function writeVisibleFile(root: string, viewer: ViewerSession, rel:
 }
 
 export async function buildTree(root: string, viewer: ViewerSession): Promise<TreeNode> {
+  const effectiveRole = viewer.role === 'dm' || viewer.dmEnabled ? 'dm' : viewer.role
   async function walk(absDir: string, relDir: string): Promise<TreeNode | null> {
     const entries = await fs.readdir(absDir, { withFileTypes: true }).catch(() => [])
     const children: TreeNode[] = []
@@ -696,7 +731,7 @@ export async function buildTree(root: string, viewer: ViewerSession): Promise<Tr
     for (const entry of entries) {
       if (entry.name.startsWith('.') && entry.name !== '.well-known') continue
       const childRel = relDir ? relPath(relDir, entry.name) : entry.name
-      if (hiddenByRole(viewer.role, childRel)) continue
+      if (hiddenByRole(effectiveRole, childRel)) continue
       const childAbs = path.join(absDir, entry.name)
 
       if (entry.isDirectory()) {
@@ -727,7 +762,7 @@ export async function createRoundPacket(root: string, viewer: ViewerSession, arg
   seatNames?: string[]
   note?: string
 }) {
-  if (viewer.role !== 'dm') throw new Error('Only DM can compose rounds')
+  if (!viewer.dmEnabled && viewer.role !== 'dm') throw new Error('Only DM can compose rounds')
   await ensureTableState(root)
   const room = await loadRoom(root)
   const seatsFile = await loadSeats(root)
@@ -752,43 +787,50 @@ export async function createRoundPacket(root: string, viewer: ViewerSession, arg
   const resultPath = relPath(ROUNDS_DIR, roundId, 'result.md')
 
   const packet = [
-    '# Round Packet',
+    '# 回合包',
     '',
     `- round_id: ${roundId}`,
     `- generated_at: ${nowIso()}`,
     `- dm: ${viewer.seatName}`,
     `- seats: ${seatNames.join(', ') || '(none)'}`,
     `- result_path: ${resultPath}`,
+    '- conversation_policy: 本轮会启动新的 opencode 执行会话，但以此回合包、共享看板、角色卡和 DM 速记承接游戏连续性。',
     '',
-    '## Room State',
+    '## 房间状态',
     `- title: ${room.title}`,
     `- ruleset: ${room.ruleset}`,
     '',
-    '## DM Note',
+    '## DM 补充',
     args.note?.trim() || '(none)',
     '',
-    '## Player Intents',
+    '## 玩家意图',
     ...intents.flatMap((intent) => [
       `### ${intent.seatName}`,
       '',
-      '#### Public',
+      '#### 公开行动',
       intent.sections.public || '(empty)',
       '',
-      '#### Private For DM',
+      '#### 私密意图（仅 DM）',
       intent.sections.privateToDm || '(empty)',
       '',
-      '#### Long Term',
+      '#### 长期目标',
       intent.sections.longTerm || '(empty)',
       '',
-      '#### Triggers',
+      '#### 触发条件',
       intent.sections.triggers || '(empty)',
       '',
     ]),
-    '## Controlled Characters',
+    '## 本轮涉及角色',
     ...characterBlocks,
     '',
-    '## Shared Board',
+    '## 共享看板',
     (await fs.readFile(absolute(root, SHARED_BOARD_FILE), 'utf8').catch(() => '')),
+    '',
+    '## 追踪要求',
+    '- 结果写入本包顶部的 result_path。',
+    '- 若角色状态改变，回写对应角色卡。',
+    '- 公开变化同步到 table/shared_board.md。',
+    '- 本轮会自动登记到 table/conversations.md。',
     '',
   ].join('\n')
 
@@ -860,8 +902,9 @@ export async function buildSnapshot(root: string, viewer: ViewerSession, visible
   const controlFile = await loadControl(root)
   const myIntent = await loadIntentForSeat(root, viewer.seatName)
 
+  const canUseDmConsole = viewer.role === 'dm' || viewer.dmEnabled
   const charPaths = controlFile.bindings
-    .filter((binding) => viewer.role === 'dm' || binding.primarySeat === viewer.seatName || binding.visibleTo.includes(viewer.seatName))
+    .filter((binding) => canUseDmConsole || binding.primarySeat === viewer.seatName || binding.visibleTo.includes(viewer.seatName))
     .map((binding) => binding.characterPath)
 
   const visibleCharacters = (
@@ -881,19 +924,23 @@ export async function buildSnapshot(root: string, viewer: ViewerSession, visible
   const sharedBoard = await readSharedBoard(root)
   const archives = await listArchives(root)
   const documentShortcuts = [
-    { title: 'Shared Board', path: SHARED_BOARD_FILE },
-    { title: 'Rules Quick Index', path: 'rules/00_规则速查索引.md' },
-    { title: 'Core Rules', path: 'rules/01_核心规则书.md' },
-    { title: 'Character Forge Guide', path: 'characters/templates/角色生成指南.md' },
+    { title: '先看这里', path: '先看这里.md' },
+    { title: '一句话开局', path: '一句话开局.md' },
+    { title: '共享看板', path: SHARED_BOARD_FILE },
+    { title: '行动语义板', path: 'playground.md' },
+    { title: '创建角色指南', path: 'characters/templates/角色生成指南.md' },
   ]
+  if (canUseDmConsole) {
+    documentShortcuts.push({ title: '游戏对话索引', path: 'table/conversations.md' })
+  }
 
   const snapshot: RoomSnapshot = {
     room,
-    viewer: { seatName: viewer.seatName, role: viewer.role },
+    viewer: { seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled },
     seats,
     myIntent,
     visibleCharacters,
-    control: viewer.role === 'dm'
+    control: canUseDmConsole
       ? controlFile.bindings
       : controlFile.bindings.filter((binding) => binding.primarySeat === viewer.seatName || binding.visibleTo.includes(viewer.seatName)),
     sharedBoard,
@@ -902,7 +949,7 @@ export async function buildSnapshot(root: string, viewer: ViewerSession, visible
     documentShortcuts,
   }
 
-  if (viewer.role === 'dm') {
+  if (canUseDmConsole) {
     snapshot.allIntents = await Promise.all(seatsFile.seats.map(async (seat) => loadIntentForSeat(root, seat.name)))
   }
 
