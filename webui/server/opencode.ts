@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+﻿import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -32,6 +32,7 @@ const DEFAULT_MODEL = process.env.GZ_OPENCODE_MODEL || 'deepseek/deepseek-v4-pro
 const DEFAULT_XDG_DIRNAME = '.opencode-runtime'
 const ENABLE_PRINT_LOGS = process.env.GZ_OPENCODE_PRINT_LOGS !== '0'
 const ENABLE_THINKING = process.env.GZ_OPENCODE_THINKING !== '0'
+const USE_INHERITED_STDIO = process.platform === 'win32' && process.env.GZ_OPENCODE_PIPE_STDIO !== '1'
 const DEFAULT_WINDOWS_OPENCODE_EXE = path.join(
   os.homedir(),
   'AppData',
@@ -90,9 +91,9 @@ function diagnoseOpencodeFailure(stderr: string, stdout: string, error?: string)
   const text = `${error || ''}\n${stderr}\n${stdout}`
   if (/uv_spawn 'git'|uv_spawn "git"|operation not permitted.*git|EPERM.*git/is.test(text)) {
     return [
-      'opencode 已找到，但启动时被禁止调用 git。',
-      '这通常发生在受限沙箱里；在正常启动的 Vite/浏览器进程外运行时一般不会复现。',
-      '如果是在本机 UI 自检中出现，请确认 git.exe 在 PATH 中且安全软件没有拦截子进程。',
+      'opencode 已找到，但启动时调用 git 被系统或沙箱拦截。',
+      '这通常发生在受限沙箱中；在正常启动的 Vite/浏览器进程外运行时一般不会复现。',
+      '如果本机 UI 自检仍失败，请确认 git.exe 在 PATH 中，且安全软件没有拦截子进程。',
     ].join('\n')
   }
   if (/EEXIST: file already exists, mkdir .*\.config\\opencode/is.test(text)) {
@@ -105,9 +106,16 @@ function diagnoseOpencodeFailure(stderr: string, stdout: string, error?: string)
     return '没有找到 opencode 可执行文件。可在 webui/.env 中设置 GZ_OPENCODE_BIN 指向 opencode.exe。'
   }
   if (/unauthorized|api key|token|auth/i.test(text)) {
-    return 'opencode 启动了，但模型认证失败。请检查 opencode 的 provider/API key 配置。'
+    return 'opencode 已启动，但模型认证失败。请检查 opencode 的 provider/API key 配置。'
   }
   return undefined
+}
+
+async function writeResultFallback(workspaceRoot: string, resultPath: string, content: string) {
+  const abs = path.join(workspaceRoot, resultPath)
+  const existing = await fs.stat(abs).catch(() => null)
+  if (existing?.isFile() && existing.size > 0 && !content.trim()) return
+  await fs.writeFile(abs, content || '(opencode completed; no captured stdout because stdio is inherited on Windows)', 'utf8')
 }
 
 function title(kind: string, viewer: ViewerSession) {
@@ -137,25 +145,30 @@ export async function runOpencodeProbe(workspaceRoot: string): Promise<OpencodeP
       windowsHide: true,
       env,
       shell: launch.shell,
+      stdio: USE_INHERITED_STDIO ? 'inherit' : ['ignore', 'pipe', 'pipe'],
     })
 
     let stdout = ''
     let stderr = ''
-    proc.stdout.setEncoding('utf8')
-    proc.stderr.setEncoding('utf8')
-    proc.stdout.on('data', (chunk: string) => {
-      stdout += chunk
-    })
-    proc.stderr.on('data', (chunk: string) => {
-      stderr += chunk
-    })
+    if (proc.stdout) {
+      proc.stdout.setEncoding('utf8')
+      proc.stdout.on('data', (chunk: string) => {
+        stdout += chunk
+      })
+    }
+    if (proc.stderr) {
+      proc.stderr.setEncoding('utf8')
+      proc.stderr.on('data', (chunk: string) => {
+        stderr += chunk
+      })
+    }
     let settled = false
     let timedOut = false
     const finish = (code: number | null, error?: string) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      const ok = !timedOut && !error && code === 0 && /\bOK\b/.test(stdout)
+      const ok = !timedOut && !error && code === 0 && (USE_INHERITED_STDIO || /\bOK\b/.test(stdout))
       resolve({
         ok,
         code,
@@ -308,25 +321,32 @@ async function startProcess(args: {
     windowsHide: true,
     env,
     shell: launch.shell,
+    stdio: USE_INHERITED_STDIO ? 'inherit' : ['ignore', 'pipe', 'pipe'],
   })
 
   let stdout = ''
   let stderr = ''
 
-  proc.stdout.setEncoding('utf8')
-  proc.stderr.setEncoding('utf8')
-  proc.stdout.on('data', (chunk: string) => {
-    stdout += chunk
-    appendRoundLog('stdout', chunk)
-  })
-  proc.stderr.on('data', (chunk: string) => {
-    stderr += chunk
-    appendRoundLog('stderr', chunk)
-  })
+  if (proc.stdout) {
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      appendRoundLog('stdout', chunk)
+    })
+  } else {
+    appendRoundLog('meta', 'Using inherited stdio for opencode on Windows to avoid pipe-mode hang')
+  }
+  if (proc.stderr) {
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', (chunk: string) => {
+      stderr += chunk
+      appendRoundLog('stderr', chunk)
+    })
+  }
   proc.on('error', async (error) => {
     appendRoundLog('meta', `Process error: ${error.message}`)
     const diagnosis = diagnoseOpencodeFailure(stderr, stdout, error.message)
-    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), [stderr || error.message, diagnosis ? `\n\n## 启动诊断\n${diagnosis}` : ''].join(''), 'utf8')
+    await writeResultFallback(args.workspaceRoot, args.resultPath, [stderr || error.message, diagnosis ? `\n\n## 鍚姩璇婃柇\n${diagnosis}` : ''].join(''))
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
     await appendConversationIndex(args.workspaceRoot, {
@@ -352,10 +372,10 @@ async function startProcess(args: {
   proc.on('close', async (code) => {
     const endedAt = new Date().toISOString()
     const diagnosis = code === 0 ? undefined : diagnoseOpencodeFailure(stderr, stdout)
-    await fs.writeFile(path.join(args.workspaceRoot, args.resultPath), [
+    await writeResultFallback(args.workspaceRoot, args.resultPath, [
       stdout || stderr || '(no output)',
-      diagnosis ? `\n\n## 启动诊断\n${diagnosis}` : '',
-    ].join(''), 'utf8')
+      diagnosis ? `\n\n## 鍚姩璇婃柇\n${diagnosis}` : '',
+    ].join(''))
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
     await appendConversationIndex(args.workspaceRoot, {
@@ -396,13 +416,13 @@ async function appendConversationIndex(workspaceRoot: string, entry: {
     await fs.writeFile(indexPath, [
       '# 游戏对话索引',
       '',
-      '这里记录 WebUI 发起的 opencode 会话。每次创建角色和行动回合都会留下回合包、结果文件和参与席位，方便回看调用链。',
+      '这里记录 WebUI 发起的 opencode 会话。每次创建角色和行动处理都会留下回合包、结果文件和参与席位，方便回看 AI DM 调用链。',
       '',
     ].join('\n'), 'utf8')
   }
 
   const lines = [
-    `## ${new Date().toLocaleString('zh-CN', { hour12: false })} - ${entry.kind === 'forge' ? '创建角色' : '行动回合'} - ${entry.status}`,
+    `## ${new Date().toLocaleString('zh-CN', { hour12: false })} - ${entry.kind === 'forge' ? '创建角色' : 'AI DM 行动处理'} - ${entry.status}`,
     '',
     `- round_id: ${entry.roundId}`,
     `- title: ${entry.title}`,

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import JoinGate from './rebuild/JoinGate.vue'
 import ShellHeader from './rebuild/ShellHeader.vue'
@@ -146,10 +146,10 @@ async function join(payload: { name: string; roomCode?: string }) {
     if (roomCode) localStorage.setItem(LAST_CODE_KEY, roomCode)
     await hydrate()
     bindEvents()
-    pushProgramLog('ok', `已进入席位 ${result.session.seatName}`, result.session.role)
+    pushProgramLog('ok', `宸茶繘鍏ュ腑浣?${result.session.seatName}`, result.session.role)
   } catch (err: any) {
     error.value = err?.message || String(err)
-    pushProgramLog('error', '进入房间失败', error.value || undefined)
+    pushProgramLog('error', '杩涘叆鎴块棿澶辫触', error.value || undefined)
   } finally {
     joinBusy.value = false
   }
@@ -207,12 +207,7 @@ async function onRunForge(payload: any) {
   try {
     const result = await runRound(session.value, { kind: 'forge', forge: payload })
     pushProgramLog('info', '已提交创角回合', result.roundId)
-    currentPacket.value = {
-      roundId: result.roundId,
-      packetPath: `table/rounds/${result.roundId}/packet.md`,
-      resultPath: `table/rounds/${result.roundId}/result.md`,
-      seatNames: [session.value.seatName],
-    }
+    currentPacket.value = null
   } finally {
     busy.value = false
   }
@@ -223,7 +218,9 @@ async function onComposeRound(payload: { seatNames: string[]; note?: string }) {
   busy.value = true
   try {
     currentPacket.value = await composeRound(session.value, payload)
-    pushProgramLog('ok', '已生成回合包', currentPacket.value.roundId)
+    pushProgramLog('ok', '已生成 AI DM 回合包', currentPacket.value.roundId)
+    await runRound(session.value, { kind: 'action', roundId: currentPacket.value.roundId })
+    pushProgramLog('info', '已从 AI 监控台重跑当前队列', currentPacket.value.roundId)
     await refresh()
   } finally {
     busy.value = false
@@ -234,7 +231,7 @@ async function onRunAction(roundId: string) {
   if (!session.value) return
   busy.value = true
   try {
-    pushProgramLog('info', '开始执行 AI DM 回合', roundId)
+    pushProgramLog('info', '寮€濮嬫墽琛?AI DM 鍥炲悎', roundId)
     await runRound(session.value, { kind: 'action', roundId })
     await refresh()
   } finally {
@@ -277,7 +274,7 @@ async function openFile(path: string) {
       size: 0,
       mtime: Date.now(),
       frontmatter: null,
-      content: `无法打开此文件：${err?.message || String(err)}`,
+      content: `鏃犳硶鎵撳紑姝ゆ枃浠讹細${err?.message || String(err)}`,
     }
   }
 }
@@ -286,21 +283,21 @@ async function runProbe() {
   if (!session.value) return
   probeBusy.value = true
   probeError.value = null
-  pushProgramLog('info', '开始 opencode 后台校验', session.value.seatName)
+  pushProgramLog('info', '寮€濮?opencode 鍚庡彴鏍￠獙', session.value.seatName)
   try {
     probeResult.value = await probeOpencode(session.value)
     probeCheckedAt.value = new Date().toISOString()
     if (!probeResult.value.ok) {
       probeError.value = probeResult.value.error || probeResult.value.stderr || probeResult.value.stdout || `opencode exited with ${probeResult.value.code ?? 'unknown'}`
-      pushProgramLog('error', 'opencode 后台校验失败', probeError.value)
+      pushProgramLog('error', 'opencode 鍚庡彴鏍￠獙澶辫触', probeError.value)
     } else {
-      pushProgramLog('ok', 'opencode 后台校验通过', `${probeResult.value.model} · ${probeResult.value.durationMs}ms`)
+      pushProgramLog('ok', 'opencode 鍚庡彴鏍￠獙閫氳繃', `${probeResult.value.model} 路 ${probeResult.value.durationMs}ms`)
     }
   } catch (err: any) {
     probeResult.value = null
     probeCheckedAt.value = new Date().toISOString()
     probeError.value = err?.message || String(err)
-    pushProgramLog('error', 'opencode 后台校验异常', probeError.value || undefined)
+    pushProgramLog('error', 'opencode 鍚庡彴鏍￠獙寮傚父', probeError.value || undefined)
   } finally {
     probeBusy.value = false
   }
@@ -319,10 +316,10 @@ async function enableDmConsole() {
     dmUpgradeCode.value = ''
     await hydrate()
     bindEvents()
-    pushProgramLog('ok', '已为当前席位启用 DM 控制台', result.session.seatName)
+    pushProgramLog('ok', '已为当前席位启用 AI 监控台', result.session.seatName)
   } catch (err: any) {
     dmUpgradeError.value = err?.message || String(err)
-    pushProgramLog('error', '启用 DM 控制台失败', dmUpgradeError.value || undefined)
+    pushProgramLog('error', '启用 AI 监控台失败', dmUpgradeError.value || undefined)
   } finally {
     dmUpgradeBusy.value = false
   }
@@ -381,8 +378,8 @@ onBeforeUnmount(() => {
     <div v-if="showDmUpgrade" class="absolute inset-0 z-30 flex items-center justify-center bg-paper-950/35 px-4">
       <div class="w-full max-w-md rounded-sm border-2 border-paper-950 bg-white shadow-[0_12px_40px_rgba(12,10,9,0.18)]">
         <div class="border-b-2 border-paper-950 px-5 py-4">
-          <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-700">添加 DM 控制台</div>
-          <div class="mt-1 text-sm leading-6 text-paper-800">输入房间口令后，当前玩家席位会临时获得 DM 控制台权限。</div>
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-700">添加 AI 监控台</div>
+          <div class="mt-1 text-sm leading-6 text-paper-800">输入房间口令后，当前席位会临时获得 AI 运行监控权限。</div>
         </div>
         <div class="space-y-4 px-5 py-4">
           <label class="block space-y-2">
@@ -411,7 +408,7 @@ onBeforeUnmount(() => {
               :disabled="dmUpgradeBusy || !dmUpgradeCode.trim()"
               class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-white disabled:opacity-40"
             >
-              {{ dmUpgradeBusy ? '验证中...' : '启用 DM 控制台' }}
+              {{ dmUpgradeBusy ? '验证中...' : '启用 AI 监控台' }}
             </button>
           </div>
         </div>
@@ -475,8 +472,7 @@ onBeforeUnmount(() => {
         <PlayerDocumentReader
           v-else-if="activeTab === 'dm' && hasDmConsole && showDmDocument"
           :file="previewFile"
-          title="DM 文件浏览"
-          return-label="返回 DM 控制台"
+          title="AI 监控文件浏览"`r`n          return-label="返回 AI 监控台"
           @close="showDmDocument = false"
         />
 
@@ -492,3 +488,4 @@ onBeforeUnmount(() => {
     </main>
   </div>
 </template>
+

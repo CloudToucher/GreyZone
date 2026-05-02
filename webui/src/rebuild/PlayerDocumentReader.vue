@@ -27,7 +27,7 @@ const emit = defineEmits<{
         </div>
         <button
           @click="emit('close')"
-          class="rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:bg-crimson-50 hover:text-crimson-700"
+          class="rounded-sm border-2 border-crimson-700 bg-crimson-600 px-4 py-3 text-center font-mono text-[12px] font-bold tracking-[0.12em] text-white hover:bg-crimson-700"
         >
           {{ returnLabel || '返回主界面' }}
         </button>

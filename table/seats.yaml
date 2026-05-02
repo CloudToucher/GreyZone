@@ -1,24 +1,18 @@
 version: 1
 seats:
-  - name: DM
+  - name: AI Monitor
     role: dm
     occupied: false
     tokenHash: null
     status: idle
     online: false
     lastSeenAt: null
-  - name: S1
-    role: player
-    occupied: false
-    tokenHash: null
-    status: idle
-    online: false
-    lastSeenAt: null
+    dmEnabled: true
   - name: 习风
     role: player
     occupied: true
-    tokenHash: 3ebc3ac82b3020e117f0f7cf61912e36676d2046c4749a6490fe9548c152ac62
+    tokenHash: 7aceb1f59bb1cc88229576d895dea3543216afccd5f455ce9907a599f3efbcda
     status: idle
     online: true
-    lastSeenAt: '2026-05-02T17:36:10.912Z'
+    lastSeenAt: '2026-05-02T19:37:06.618Z'
     dmEnabled: true

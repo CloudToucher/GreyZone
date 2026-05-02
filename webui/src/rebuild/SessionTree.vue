@@ -21,7 +21,7 @@ const folderLabels: Record<string, string> = {
   characters: '角色档案',
   templates: '模板',
   active: '当前角色',
-  dm_guide: 'DM 指南',
+  dm_guide: 'AI DM 指南',
   scenes: '场景',
   story: '剧情',
   assets: '资源',
@@ -33,15 +33,6 @@ const folderLabels: Record<string, string> = {
   items: '物品',
   enemies: '敌人',
   npcs: 'NPC',
-  urban: '城区',
-  industrial: '工业区',
-  underground: '地下',
-  wilderness: '荒野',
-  main_plot: '主线',
-  side_quests: '支线',
-  events: '事件',
-  combat: '战斗',
-  exploration: '探索',
 }
 
 watch(
@@ -86,11 +77,6 @@ const rootChildren = computed(() => props.tree?.children || [])
 const shortcuts = computed(() => props.snapshot.documentShortcuts || [])
 const currentSeat = computed(() => props.snapshot.viewer.seatName)
 const currentPhase = computed(() => props.snapshot.room.phase)
-const workspaceLabel = computed(() => {
-  if (props.activeTab === 'dm') return 'DM 控制台'
-  if (props.activeTab === 'shared') return '共享看板'
-  return '玩家工作台'
-})
 const workspaceTone = computed(() => props.activeTab === 'dm' ? 'text-navy-800' : 'text-crimson-700')
 const workspaceDot = computed(() => props.activeTab === 'dm' ? 'bg-navy-800' : 'bg-crimson-600')
 
@@ -111,8 +97,7 @@ const TreeItem: any = defineComponent({
           h(
             'button',
             {
-              class:
-                'group flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors hover:bg-paper-200',
+              class: 'group flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors hover:bg-paper-200',
               style: { paddingLeft: indent },
               onClick: () => toggle(node),
             },
@@ -125,31 +110,23 @@ const TreeItem: any = defineComponent({
               h(
                 'span',
                 {
-                  class:
-                    (nodeProps.depth === 0
-                      ? 'font-serif text-[14px] font-bold text-paper-950'
-                      : 'text-[13px] font-semibold text-paper-800') + ' truncate',
+                  class: (nodeProps.depth === 0
+                    ? 'font-serif text-[14px] font-bold text-paper-950'
+                    : 'text-[13px] font-semibold text-paper-800') + ' truncate',
                 },
                 folderLabels[node.name] || node.name,
               ),
               h(
                 'span',
                 {
-                  class:
-                    'ml-auto rounded-sm bg-paper-200 px-1.5 py-px font-mono text-[10px] font-semibold text-paper-700 group-hover:bg-paper-300',
+                  class: 'ml-auto rounded-sm bg-paper-200 px-1.5 py-px font-mono text-[10px] font-semibold text-paper-700 group-hover:bg-paper-300',
                 },
                 node.children ? String(node.children.length) : '',
               ),
             ],
           ),
           open && node.children
-            ? h(
-                'ul',
-                { class: 'ml-3 border-l border-dashed border-paper-300' },
-                node.children.map((child) =>
-                  h(TreeItem, { key: child.path, node: child, depth: nodeProps.depth + 1 }),
-                ),
-              )
+            ? h('ul', { class: 'ml-3 border-l border-dashed border-paper-300' }, node.children.map((child) => h(TreeItem, { key: child.path, node: child, depth: nodeProps.depth + 1 })))
             : null,
         ])
       }
@@ -163,14 +140,12 @@ const TreeItem: any = defineComponent({
           {
             class:
               'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] transition-colors ' +
-              (current
-                ? 'bg-crimson-50 font-semibold text-crimson-700 ring-1 ring-crimson-200'
-                : 'text-paper-800 hover:bg-paper-200 hover:text-paper-950'),
+              (current ? 'bg-crimson-50 font-semibold text-crimson-700 ring-1 ring-crimson-200' : 'text-paper-800 hover:bg-paper-200 hover:text-paper-950'),
             style: { paddingLeft: indent },
             onClick: () => emit('openFile', node.path),
           },
           [
-            h('span', { class: 'inline-block w-3 font-mono text-[10px] text-paper-700' }, current ? '◆' : '·'),
+            h('span', { class: 'inline-block w-3 font-mono text-[10px] text-paper-700' }, current ? '●' : '·'),
             h('span', { class: 'truncate' }, fileLabel(node.name)),
           ],
         ),
@@ -186,7 +161,7 @@ const TreeItem: any = defineComponent({
       <div class="flex items-center gap-2">
         <span class="h-2 w-2 rounded-full" :class="workspaceDot" />
         <span class="stamp" :class="workspaceTone">
-          {{ snapshot.viewer.role === 'dm' ? 'DM 工作区' : '玩家工作区' }}
+          {{ snapshot.viewer.role === 'dm' || snapshot.viewer.dmEnabled ? 'AI 监控台' : '玩家工作台' }}
         </span>
       </div>
       <div class="font-mono text-[10px] uppercase tracking-[0.16em] text-paper-700">
@@ -198,7 +173,7 @@ const TreeItem: any = defineComponent({
       <div v-if="activeTab !== 'shared'" class="px-3 pb-3">
         <button
           @click="emit('returnHome')"
-          class="w-full rounded-sm border-2 border-paper-950 bg-paper-950 px-3 py-2 text-left font-mono text-[10px] font-bold tracking-[0.14em] text-white transition hover:bg-paper-800"
+          class="w-full rounded-sm border-2 border-crimson-700 bg-crimson-600 px-5 py-4 text-center font-mono text-[15px] font-black tracking-[0.16em] text-white transition hover:bg-crimson-700"
         >
           回主界面
         </button>

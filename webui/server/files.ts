@@ -6,6 +6,7 @@ import {
   authenticateViewer,
   buildSnapshot,
   buildTree,
+  createAiRoundPacket,
   canWritePath,
   createRoundPacket,
   enableDmConsole,
@@ -194,13 +195,38 @@ export function filesMiddleware(workspaceRoot: string) {
           return sendJson(res, 400, { error: 'invalid sections payload' })
         }
         const intent = await saveIntentForSeat(root, viewer.seatName, sections)
+        let normalizedStatus: string | null = null
         if (typeof body?.status === 'string') {
           const normalized = body.status
           if (normalized === 'idle' || normalized === 'ready' || normalized === 'submitted' || normalized === 'locked') {
             await updateSeatStatus(root, viewer.seatName, normalized)
+            normalizedStatus = normalized
           }
         }
         emitSnapshotRefresh('intent-updated')
+        if (normalizedStatus === 'submitted') {
+          void (async () => {
+            try {
+              const packet = await createAiRoundPacket(root, { reason: `submitted:${viewer.seatName}` })
+              const aiViewer = { seatName: 'AI DM', role: 'dm' as const, token: '', dmEnabled: true }
+              void runActionRound({
+                workspaceRoot: root,
+                viewer: aiViewer,
+                roundId: packet.roundId,
+                seatNames: packet.seatNames,
+                packetPath: packet.packetPath,
+                resultPath: packet.resultPath,
+              })
+              emitSnapshotRefresh('ai-round-started')
+            } catch (error: any) {
+              const message = String(error?.message || error)
+              if (!/already processing|No submitted/.test(message)) {
+                console.error('[gray-zone-ai-auto]', error)
+              }
+              emitSnapshotRefresh('ai-round-skipped')
+            }
+          })()
+        }
         return sendJson(res, 200, intent)
       }
 
@@ -266,6 +292,9 @@ export function filesMiddleware(workspaceRoot: string) {
         }
 
         const packetContent = await fs.readFile(path.resolve(root, packetPath), 'utf8')
+        if (/创建角色|forge/i.test(packetContent.slice(0, 500))) {
+          return sendJson(res, 409, { error: 'this is a character creation packet; it cannot be rerun as an action round' })
+        }
         const seatsMatch = packetContent.match(/- seats:\s*(.+)/)
         const seatNames = seatsMatch?.[1]
           ? seatsMatch[1].split(',').map((value) => value.trim()).filter(Boolean)

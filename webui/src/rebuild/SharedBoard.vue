@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { watch } from 'vue'
-import type { FilePayload, RoomSnapshot, SessionCredentials } from '@/lib/api'
+import type { FilePayload, RoomSnapshot, SessionCredentials, TreeNode } from '@/lib/api'
 import RenderedMarkdown from './RenderedMarkdown.vue'
 
-const props = defineProps<{
+defineProps<{
   session: SessionCredentials
   snapshot: RoomSnapshot
-  tree: { name: string; path: string; type: 'dir' | 'file'; children?: any[] } | null
+  tree: TreeNode | null
   previewFile: FilePayload | null
 }>()
 
@@ -14,13 +13,7 @@ const emit = defineEmits<{
   openFile: [path: string]
 }>()
 
-watch(
-  () => props.snapshot.sharedBoard?.path,
-  () => {},
-  { immediate: true },
-)
-
-function flatten(node: any, acc: string[] = []) {
+function flatten(node: TreeNode | null, acc: string[] = []) {
   if (!node) return acc
   if (node.type === 'file') acc.push(node.path)
   for (const child of node.children || []) flatten(child, acc)
@@ -43,8 +36,24 @@ function fileLabel(path: string) {
 
       <div class="clash-card overflow-hidden">
         <div class="clash-card-header px-4 py-3">
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">最近 DM 回复</div>
+          <div class="mt-1 text-sm text-white/80">完整文学性描写与裁定在 DM 回复里；共享看板只保留公开摘要。</div>
+        </div>
+        <div class="space-y-2 p-4">
+          <article v-for="result in snapshot.latestResults" :key="result.id" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+            <button @click="emit('openFile', result.path)" class="block w-full text-left">
+              <div class="font-serif text-base font-bold text-paper-950">{{ result.title }}</div>
+              <div class="mt-1 font-mono text-[10px] tracking-[0.16em] text-paper-700">{{ new Date(result.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</div>
+              <div class="mt-2 text-sm leading-6 text-paper-800">{{ result.excerpt || '打开查看完整回复。' }}</div>
+            </button>
+          </article>
+          <div v-if="!snapshot.latestResults.length" class="text-sm leading-7 text-paper-800">暂无 DM 回复。</div>
+        </div>
+      </div>
+
+      <div class="clash-card overflow-hidden">
+        <div class="clash-card-header px-4 py-3">
           <div class="font-mono text-[10px] font-bold tracking-[0.18em]">回合归档</div>
-          <div class="mt-1 text-sm text-white/80">主要供 DM 回溯；玩家通常只需要看结果。</div>
         </div>
         <div class="space-y-2 p-4">
           <article v-for="archive in snapshot.archives" :key="archive.id" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
@@ -59,9 +68,7 @@ function fileLabel(path: string) {
               </button>
             </div>
           </article>
-          <div v-if="!snapshot.archives.length" class="text-sm leading-7 text-paper-800">
-            暂无回合归档。
-          </div>
+          <div v-if="!snapshot.archives.length" class="text-sm leading-7 text-paper-800">暂无回合归档。</div>
         </div>
       </div>
     </section>
@@ -89,7 +96,7 @@ function fileLabel(path: string) {
               <div class="mb-2 font-mono text-[10px] tracking-[0.18em] text-paper-800">{{ previewFile.path }}</div>
               <RenderedMarkdown :content="previewFile.content" compact max-height="38rem" />
             </div>
-            <div v-else class="text-sm text-paper-800">从左侧选择一个文件后，会在这里渲染阅读。</div>
+            <div v-else class="text-sm text-paper-800">从左侧选择文件后，会在这里渲染阅读。</div>
           </div>
         </div>
       </div>

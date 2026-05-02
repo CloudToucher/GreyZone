@@ -41,6 +41,13 @@ export interface CharacterSummary {
   title: string
   concept: string
   currentSituation: string
+  location: string
+  sceneId: string
+  partyId: string
+  visibilityScope: 'private' | 'scene' | 'public'
+  inventory: string[]
+  safeBox: Array<{ label: string; item: string; empty: boolean }>
+  semanticStatus: string[]
   stats: {
     level?: string | number
     xp?: string | number
@@ -74,6 +81,54 @@ export interface ControlBinding {
   } | null
 }
 
+export interface PublicIntentSummary {
+  seatName: string
+  status: 'idle' | 'ready' | 'submitted' | 'locked'
+  updatedAt: string | null
+  publicText: string
+  longTerm: string
+  characterNames: string[]
+  characterPaths: string[]
+  sceneId: string
+  location: string
+}
+
+export interface SceneThread {
+  id: string
+  location: string
+  partyIds: string[]
+  seatNames: string[]
+  characters: Array<{
+    name: string
+    path: string
+    controller: string | null
+    location: string
+    partyId: string
+  }>
+  statuses: Array<{ seatName: string; status: 'idle' | 'ready' | 'submitted' | 'locked' }>
+}
+
+export interface LatestResultSummary {
+  id: string
+  path: string
+  updatedAt: string
+  title: string
+  excerpt: string
+  visibility: 'public' | 'scene' | 'private'
+}
+
+export interface AiQueueItem {
+  id: string
+  kind: 'action' | 'forge'
+  status: 'waiting' | 'composing' | 'running' | 'done' | 'error'
+  participantSeats: string[]
+  sceneIds: string[]
+  packetPath?: string
+  resultPath?: string | null
+  updatedAt: string
+  error?: string | null
+}
+
 export interface RoomSnapshot {
   room: {
     version: number
@@ -104,9 +159,14 @@ export interface RoomSnapshot {
   visibleCharacters: CharacterSummary[]
   control: ControlBinding[]
   allIntents?: IntentDocument[]
+  publicIntents: PublicIntentSummary[]
+  sceneThreads: SceneThread[]
+  latestResults: LatestResultSummary[]
+  aiQueue: AiQueueItem[]
   sharedBoard: FilePayload | null
   archives: Array<{
     id: string
+    kind: 'action' | 'forge'
     packetPath: string
     resultPath: string | null
     updatedAt: string
