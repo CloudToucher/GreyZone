@@ -2,7 +2,7 @@
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createForgePrompt, createRoundPrompt } from './grayZone'
+import { createAssistantPrompt, createDmSessionPrompt, createForgePrompt, createRoundPrompt, createWelcomePrompt } from './grayZone'
 import {
   finalizeSeatsAfterRound,
   markRoomIdle,
@@ -30,7 +30,8 @@ export interface OpencodeProbeResult {
 
 const DEFAULT_MODEL = process.env.GZ_OPENCODE_MODEL || 'deepseek/deepseek-v4-pro'
 const DEFAULT_XDG_DIRNAME = '.opencode-runtime'
-const ENABLE_PRINT_LOGS = process.env.GZ_OPENCODE_PRINT_LOGS !== '0'
+// Default disabled — file protocol does not need stdout capture. Set to '1' only for debugging.
+const ENABLE_PRINT_LOGS = process.env.GZ_OPENCODE_PRINT_LOGS === '1'
 const ENABLE_THINKING = process.env.GZ_OPENCODE_THINKING !== '0'
 const USE_INHERITED_STDIO = process.platform === 'win32' && process.env.GZ_OPENCODE_PIPE_STDIO !== '1'
 const DEFAULT_WINDOWS_OPENCODE_EXE = path.join(
@@ -115,7 +116,30 @@ async function writeResultFallback(workspaceRoot: string, resultPath: string, co
   const abs = path.join(workspaceRoot, resultPath)
   const existing = await fs.stat(abs).catch(() => null)
   if (existing?.isFile() && existing.size > 0 && !content.trim()) return
-  await fs.writeFile(abs, content || '(opencode completed; no captured stdout because stdio is inherited on Windows)', 'utf8')
+  await fs.writeFile(abs, content || '(opencode completed; no captured output)', 'utf8')
+}
+
+async function readResultFromDisk(workspaceRoot: string, resultPath: string): Promise<{
+  content: string
+  marker: Record<string, unknown> | null
+}> {
+  const abs = path.join(workspaceRoot, resultPath)
+  try {
+    const content = await fs.readFile(abs, 'utf8')
+    if (!content.trim()) return { content: '(no output)', marker: null }
+    const markerMatch = content.match(/<!--\s*(ROUND_DONE|FORGE_DONE)\s+(\{.*?\})\s*-->/s)
+    if (markerMatch) {
+      try {
+        const marker = JSON.parse(markerMatch[2])
+        return { content, marker: { type: markerMatch[1], ...marker } }
+      } catch {
+        return { content, marker: null }
+      }
+    }
+    return { content, marker: null }
+  } catch {
+    return { content: '(unable to read result file)', marker: null }
+  }
 }
 
 function title(kind: string, viewer: ViewerSession) {
@@ -199,6 +223,68 @@ export async function runOpencodeProbe(workspaceRoot: string): Promise<OpencodeP
     proc.on('close', (code) => {
       finish(code)
     })
+  })
+}
+
+export async function runWelcomeRound(args: {
+  workspaceRoot: string
+  viewer: ViewerSession
+  roundId: string
+}) {
+  const packetPath = `table/rounds/${args.roundId}/packet.md`
+  const resultPath = `table/rounds/${args.roundId}/result.md`
+  const prompt = createWelcomePrompt({
+    packetPath,
+    resultPath,
+    sharedBoardPath: 'table/shared_board.md',
+  })
+
+  await fs.mkdir(path.join(args.workspaceRoot, `table/rounds/${args.roundId}`), { recursive: true })
+  await fs.writeFile(path.join(args.workspaceRoot, packetPath), prompt, 'utf8')
+
+  return startProcess({
+    workspaceRoot: args.workspaceRoot,
+    viewer: args.viewer,
+    roundId: args.roundId,
+    kind: 'forge',
+    participantSeats: [args.viewer.seatName],
+    packetPath,
+    resultPath,
+    prompt,
+    afterFinish: async () => {
+      await reconcileTableFromCharacters(args.workspaceRoot)
+    },
+  })
+}
+
+export async function runAssistantQuery(args: {
+  workspaceRoot: string
+  viewer: ViewerSession
+  roundId: string
+  question: string
+  charSummary?: string
+}) {
+  const resultPath = `table/rounds/${args.roundId}/result.md`
+  const packetPath = `table/rounds/${args.roundId}/packet.md`
+  const prompt = createAssistantPrompt({
+    question: args.question,
+    resultPath,
+    charSummary: args.charSummary,
+  })
+
+  await fs.mkdir(path.join(args.workspaceRoot, `table/rounds/${args.roundId}`), { recursive: true })
+  await fs.writeFile(path.join(args.workspaceRoot, packetPath), prompt, 'utf8')
+
+  return startProcess({
+    workspaceRoot: args.workspaceRoot,
+    viewer: args.viewer,
+    roundId: args.roundId,
+    kind: 'action',
+    participantSeats: [args.viewer.seatName],
+    packetPath,
+    resultPath,
+    prompt,
+    afterFinish: async () => {},
   })
 }
 
@@ -346,7 +432,8 @@ async function startProcess(args: {
   proc.on('error', async (error) => {
     appendRoundLog('meta', `Process error: ${error.message}`)
     const diagnosis = diagnoseOpencodeFailure(stderr, stdout, error.message)
-    await writeResultFallback(args.workspaceRoot, args.resultPath, [stderr || error.message, diagnosis ? `\n\n## 鍚姩璇婃柇\n${diagnosis}` : ''].join(''))
+    await writeResultFallback(args.workspaceRoot, args.resultPath, [stderr || error.message, diagnosis ? `\n\n## 启动诊断\n${diagnosis}` : ''].join(''))
+    const diskResult = await readResultFromDisk(args.workspaceRoot, args.resultPath)
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
     await appendConversationIndex(args.workspaceRoot, {
@@ -365,35 +452,55 @@ async function startProcess(args: {
       exitCode: null,
       error: error.message,
       resultPath: args.resultPath,
+      resultContent: diskResult.content,
+      resultMarker: diskResult.marker,
       affectedFiles: [args.packetPath, args.resultPath],
     })
   })
 
   proc.on('close', async (code) => {
     const endedAt = new Date().toISOString()
+    
+    // Read result.md from disk — this is the authoritative output
+    const diskResult = await readResultFromDisk(args.workspaceRoot, args.resultPath)
+    const hasMarker = diskResult.marker !== null
+    
+    // Only write fallback if result.md is empty or has no real content
+    if (!diskResult.content || diskResult.content === '(no output)' || diskResult.content === '(unable to read result file)') {
+      const fallback = [stdout || stderr || '(no output)'].join('')
+      await writeResultFallback(args.workspaceRoot, args.resultPath, fallback)
+      const reRead = await readResultFromDisk(args.workspaceRoot, args.resultPath)
+      diskResult.content = reRead.content
+      diskResult.marker = reRead.marker
+    }
+    
     const diagnosis = code === 0 ? undefined : diagnoseOpencodeFailure(stderr, stdout)
-    await writeResultFallback(args.workspaceRoot, args.resultPath, [
-      stdout || stderr || '(no output)',
-      diagnosis ? `\n\n## 鍚姩璇婃柇\n${diagnosis}` : '',
-    ].join(''))
+    appendRoundLog('meta', `Process exited. Marker found: ${hasMarker}. Result size: ${diskResult.content.length} chars.`)
+    
     await args.afterFinish()
     await markRoomIdle(args.workspaceRoot)
+    
+    const status = hasMarker ? 'done' : (code === 0 ? 'done' : 'error')
+    const errorMsg = hasMarker ? null : (code === 0 ? null : stderr || `opencode exited with code ${code}`)
+    
     await appendConversationIndex(args.workspaceRoot, {
       roundId: args.roundId,
       kind: args.kind,
-      status: code === 0 ? 'done' : 'error',
+      status,
       title: runTitle,
       participantSeats: args.participantSeats,
       packetPath: args.packetPath,
       resultPath: args.resultPath,
-      error: code === 0 ? undefined : diagnosis || stderr || `opencode exited with code ${code}`,
+      error: errorMsg ? (diagnosis || errorMsg) : undefined,
     })
     finishRound({
-      status: code === 0 ? 'done' : 'error',
+      status,
       endedAt,
       exitCode: code,
-      error: code === 0 ? null : stderr || `opencode exited with code ${code}`,
+      error: errorMsg ?? null,
       resultPath: args.resultPath,
+      resultContent: diskResult.content,
+      resultMarker: diskResult.marker,
       affectedFiles: [args.packetPath, args.resultPath],
     })
   })
@@ -434,4 +541,239 @@ async function appendConversationIndex(workspaceRoot: string, entry: {
   ].filter(Boolean)
 
   await fs.appendFile(indexPath, `${lines.join('\n')}\n`, 'utf8')
+}
+
+// ─── DM Session (long-life) management ───
+
+export interface DmSessionState {
+  process: ReturnType<typeof spawn> | null
+  status: 'idle' | 'starting' | 'running' | 'stopped'
+  startedAt: string | null
+  roundsHandled: number
+  currentRoundId: string | null
+  welcomeResultPath: string
+}
+
+let dmSession: DmSessionState = {
+  process: null,
+  status: 'idle',
+  startedAt: null,
+  roundsHandled: 0,
+  currentRoundId: null,
+  welcomeResultPath: '',
+}
+
+export function getDmSessionState(): Readonly<DmSessionState> {
+  return dmSession
+}
+
+export async function startDmSession(args: {
+  workspaceRoot: string
+  welcomeRoundId: string
+}) {
+  // Kill stale session if it exists
+  if (dmSession.process) {
+    if (dmSession.status === 'running') {
+      appendRoundLog('meta', 'DM Session already running, rejecting duplicate start')
+      return { alreadyRunning: true }
+    }
+    // Stale process — kill it
+    try { dmSession.process.kill('SIGTERM') } catch { /* ignore */ }
+    dmSession.process = null
+  }
+  
+  // Remove any stale trigger/heartbeat files from previous session
+  const triggerPath = path.join(args.workspaceRoot, 'table', 'dm_trigger')
+  const lockPath = path.join(args.workspaceRoot, 'table', 'dm_trigger.lock')
+  await fs.unlink(triggerPath).catch(() => {})
+  await fs.unlink(lockPath).catch(() => {})
+
+  const welcomeResultPath = `table/rounds/${args.welcomeRoundId}/result.md`
+  dmSession.welcomeResultPath = welcomeResultPath
+  dmSession.status = 'starting'
+  dmSession.startedAt = new Date().toISOString()
+  dmSession.roundsHandled = 0
+
+  try {
+    // Check for existing session save
+    const sessionSavePath = 'table/session_save.md'
+    const hasSessionSave = await fs.stat(path.join(args.workspaceRoot, sessionSavePath)).catch(() => null)
+
+    const prompt = createDmSessionPrompt({
+      sharedBoardPath: 'table/shared_board.md',
+      welcomeResultPath,
+      sessionSavePath: hasSessionSave ? sessionSavePath : undefined,
+    })
+
+    const env = buildOpencodeEnv(args.workspaceRoot)
+    const launch = await resolveOpencodeCommand()
+    const sessionTitle = `Gray Zone DM Session | ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+    const runArgs = buildRunArgs(args.workspaceRoot, sessionTitle, prompt)
+
+    // Ensure welcome round directory exists
+    await fs.mkdir(path.join(args.workspaceRoot, `table/rounds/${args.welcomeRoundId}`), { recursive: true })
+
+    // Preserve the prompt for debugging
+    await fs.writeFile(path.join(args.workspaceRoot, `table/rounds/${args.welcomeRoundId}`, 'packet.md'), prompt, 'utf8')
+
+    const proc = spawn(launch.command, runArgs, {
+      cwd: args.workspaceRoot,
+      windowsHide: true,
+      env,
+      shell: launch.shell,
+      stdio: USE_INHERITED_STDIO ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+    })
+
+    dmSession.process = proc
+    dmSession.status = 'running'
+
+    let stdout = ''
+    let stderr = ''
+
+    if (proc.stdout) {
+      proc.stdout.setEncoding('utf8')
+      proc.stdout.on('data', (chunk: string) => {
+        stdout += chunk
+        appendRoundLog('stdout', chunk)
+      })
+    } else {
+      appendRoundLog('meta', 'DM Session using inherited stdio (output via files)')
+    }
+    if (proc.stderr) {
+      proc.stderr.setEncoding('utf8')
+      proc.stderr.on('data', (chunk: string) => {
+        stderr += chunk
+        appendRoundLog('stderr', chunk)
+      })
+    }
+
+    proc.on('error', async (error) => {
+      appendRoundLog('meta', `DM Session error: ${error.message}`)
+      dmSession.status = 'stopped'
+      dmSession.process = null
+    })
+
+    proc.on('close', async (code) => {
+      appendRoundLog('meta', `DM Session closed with code ${code}`)
+      dmSession.status = 'stopped'
+      dmSession.process = null
+      if (code === 0 && dmSession.roundsHandled >= 15) {
+        appendRoundLog('meta', 'DM Session reached round limit, session save expected')
+      }
+    })
+
+    return { alreadyRunning: false, welcomeResultPath }
+  } catch (error: any) {
+    dmSession.status = 'stopped'
+    appendRoundLog('meta', `DM Session failed to start: ${error?.message || error}`)
+    return { alreadyRunning: false, welcomeResultPath, error: error?.message || 'Failed to start DM session' }
+  }
+}
+
+export async function writeDmTrigger(args: {
+  workspaceRoot: string
+  roundId: string
+  packetPath: string
+  resultPath: string
+  seatNames: string[]
+}) {
+  const triggerPath = path.join(args.workspaceRoot, 'table', 'dm_trigger')
+  const lockPath = path.join(args.workspaceRoot, 'table', 'dm_trigger.lock')
+
+  const content = [
+    '---',
+    `round_id: "${args.roundId}"`,
+    `packet_path: "${args.packetPath}"`,
+    `result_path: "${args.resultPath}"`,
+    `submitted_seats: [${args.seatNames.map((s) => `"${s}"`).join(', ')}]`,
+    `created_at: "${new Date().toISOString()}"`,
+    '---',
+  ].join('\n')
+
+  await fs.writeFile(lockPath, '', 'utf8')
+  await fs.writeFile(triggerPath, content, 'utf8')
+  dmSession.currentRoundId = args.roundId
+  dmSession.roundsHandled++
+}
+
+export async function stopDmSession() {
+  if (dmSession.process) {
+    try { dmSession.process.kill('SIGTERM') } catch { /* ignore */ }
+    dmSession.process = null
+  }
+  dmSession.status = 'stopped'
+}
+
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+let heartbeatCallback: (() => Promise<void>) | null = null
+
+export function startDmHeartbeat(workspaceRoot: string, onStale: () => Promise<void>) {
+  stopDmHeartbeat()
+  const heartbeatPath = path.join(workspaceRoot, 'table', 'dm_heartbeat')
+  
+  heartbeatCallback = async () => {
+    if (dmSession.status !== 'running') return
+    try {
+      const stat = await fs.stat(heartbeatPath).catch(() => null)
+      const now = Date.now()
+      if (stat) {
+        const age = now - stat.mtimeMs
+        if (age > 300000) {
+          // Heartbeat stale for >5 minutes
+          appendRoundLog('meta', `DM Session heartbeat stale (${Math.round(age / 1000)}s), restarting...`)
+          await onStale()
+        }
+      } else {
+        // No heartbeat file yet — check if session has been running too long without heartbeat
+        if (dmSession.startedAt) {
+          const sessionAge = now - new Date(dmSession.startedAt).getTime()
+          // Allow 120s grace period for first heartbeat
+          if (sessionAge > 120000 && dmSession.roundsHandled === 0) {
+            appendRoundLog('meta', `DM Session no heartbeat after ${Math.round(sessionAge / 1000)}s, may be stuck`)
+          }
+        }
+      }
+    } catch {
+      /* ignore heartbeat check errors */
+    }
+  }
+
+  heartbeatTimer = setInterval(() => {
+    void heartbeatCallback?.()
+  }, 30000) // Check every 30s
+}
+
+export function stopDmHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+  heartbeatCallback = null
+}
+
+export function pollDmResult(workspaceRoot: string, resultPath: string, opts: {
+  onDone: (content: string, marker: Record<string, unknown> | null) => Promise<void>
+  onTimeout: () => Promise<void>
+  intervalMs?: number
+  timeoutMs?: number
+}) {
+  const interval = opts.intervalMs || 2000
+  const timeout = opts.timeoutMs || 300000
+  let elapsed = 0
+
+  const check = async () => {
+    const diskResult = await readResultFromDisk(workspaceRoot, resultPath)
+    if (diskResult.marker) {
+      await opts.onDone(diskResult.content, diskResult.marker)
+      return
+    }
+    elapsed += interval
+    if (elapsed >= timeout) {
+      await opts.onTimeout()
+      return
+    }
+    setTimeout(check, interval)
+  }
+
+  setTimeout(check, interval)
 }

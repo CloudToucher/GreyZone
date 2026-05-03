@@ -11,8 +11,8 @@ seats:
   - name: 习风
     role: player
     occupied: true
-    tokenHash: 7aceb1f59bb1cc88229576d895dea3543216afccd5f455ce9907a599f3efbcda
+    tokenHash: 1f1975c8d316f7c37fa74373ea9d27615453d9c36330e72f2d5a21b83aa94c3b
     status: idle
     online: true
-    lastSeenAt: '2026-05-02T19:37:06.618Z'
+    lastSeenAt: '2026-05-03T08:00:27.506Z'
     dmEnabled: true

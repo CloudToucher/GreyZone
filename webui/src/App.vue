@@ -11,6 +11,7 @@ import {
   assignCharacter,
   composeRound,
   enableDmConsoleSession,
+  enterGreyZone,
   fetchFileSession,
   fetchSnapshot,
   fetchTreeSession,
@@ -183,8 +184,9 @@ async function saveIntent(sections: any, status?: 'idle' | 'ready' | 'submitted'
   if (!session.value) return
   busy.value = true
   try {
-    await saveMyIntent(session.value, sections, status)
+    const result = await saveMyIntent(session.value, sections, status)
     await refresh()
+    return result
   } finally {
     busy.value = false
   }
@@ -231,9 +233,31 @@ async function onRunAction(roundId: string) {
   if (!session.value) return
   busy.value = true
   try {
-    pushProgramLog('info', '寮€濮嬫墽琛?AI DM 鍥炲悎', roundId)
+    pushProgramLog('info', '开始执行 AI DM 回合', roundId)
     await runRound(session.value, { kind: 'action', roundId })
     await refresh()
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onEnterGreyZone() {
+  if (!session.value) return
+  busy.value = true
+  error.value = null
+  try {
+    pushProgramLog('info', '进入灰区... 等待 AI DM 生成欢迎场景')
+    const result = await enterGreyZone(session.value)
+    if (result.roundId) {
+      pushProgramLog('ok', '已触发欢迎场景生成', result.roundId)
+    } else {
+      pushProgramLog('info', 'DM 会话已在运行中，欢迎场景即将生成')
+    }
+    await refresh()
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    error.value = msg
+    pushProgramLog('error', '进入灰区失败', msg)
   } finally {
     busy.value = false
   }
@@ -445,6 +469,7 @@ onBeforeUnmount(() => {
             @respond-transfer="onRespondTransfer"
             @run-forge="onRunForge"
             @open-file="openFile"
+            @enter-grey-zone="onEnterGreyZone"
           />
         </template>
 

@@ -105,7 +105,44 @@ export interface LatestResultSummary {
   updatedAt: string
   title: string
   excerpt: string
+  content: string
   visibility: 'public' | 'scene' | 'private'
+}
+
+export interface SceneReadinessResult {
+  allReady: boolean
+  sceneId: string
+  totalSeats: number
+  readySeats: Array<{ seatName: string; status: string }>
+  notReadySeats: Array<{ seatName: string; status: string }>
+  dmHostedSeats: Array<{ seatName: string }>
+}
+
+export interface RoomSnapshot {
+  room: RoomState
+  viewer: { seatName: string; role: 'dm' | 'player'; dmEnabled?: boolean }
+  seats: Array<{
+    name: string
+    role: 'dm' | 'player'
+    status: SeatRecord['status']
+    occupied: boolean
+    online: boolean
+    lastSeenAt: string | null
+    controlledCharacterCount: number
+  }>
+  myIntent: IntentDocument
+  visibleCharacters: CharacterSummary[]
+  control: ControlBinding[]
+  allIntents?: IntentDocument[]
+  publicIntents: PublicIntentSummary[]
+  sceneThreads: SceneThread[]
+  latestResults: LatestResultSummary[]
+  aiQueue: AiQueueItem[]
+  sharedBoard: VisibleFile | null
+  latestResultContent: string | null
+  archives: ArchiveEntry[]
+  visibleRound: VisibleRoundState | null
+  documentShortcuts: Array<{ title: string; path: string }>
 }
 
 export interface AiQueueItem {
@@ -135,32 +172,6 @@ export interface VisibleFile {
   content: string
 }
 
-export interface RoomSnapshot {
-  room: RoomState
-  viewer: { seatName: string; role: 'dm' | 'player'; dmEnabled?: boolean }
-  seats: Array<{
-    name: string
-    role: 'dm' | 'player'
-    status: SeatRecord['status']
-    occupied: boolean
-    online: boolean
-    lastSeenAt: string | null
-    controlledCharacterCount: number
-  }>
-  myIntent: IntentDocument
-  visibleCharacters: CharacterSummary[]
-  control: ControlBinding[]
-  allIntents?: IntentDocument[]
-  publicIntents: PublicIntentSummary[]
-  sceneThreads: SceneThread[]
-  latestResults: LatestResultSummary[]
-  aiQueue: AiQueueItem[]
-  sharedBoard: VisibleFile | null
-  archives: ArchiveEntry[]
-  visibleRound: VisibleRoundState | null
-  documentShortcuts: Array<{ title: string; path: string }>
-}
-
 interface SeatsFile {
   version: number
   seats: SeatRecord[]
@@ -178,6 +189,8 @@ const CONTROL_FILE = `${TABLE_DIR}/control.yaml`
 const SHARED_BOARD_FILE = `${TABLE_DIR}/shared_board.md`
 const INTENTS_DIR = `${TABLE_DIR}/intents`
 const ROUNDS_DIR = `${TABLE_DIR}/rounds`
+
+export const DM_HOSTED_MARKER = 'AI DM托管状态'
 
 const PUBLIC_DOCS = new Set(['README.md', '开始游戏.md', '一句话开局.md', '先看这里.md', 'playground.md'])
 const PUBLIC_PREFIXES = ['rules', 'assets/items', 'characters/templates']
@@ -372,8 +385,12 @@ async function saveRoom(root: string, room: RoomState) {
   await writeYamlFile(absolute(root, ROOM_FILE), room)
 }
 
-async function loadSeats(root: string) {
+export async function loadSeatsFile(root: string) {
   return readYamlFile<SeatsFile>(absolute(root, SEATS_FILE))
+}
+
+async function loadSeats(root: string) {
+  return loadSeatsFile(root)
 }
 
 async function saveSeats(root: string, seats: SeatsFile) {
@@ -826,6 +843,7 @@ async function buildLatestResults(root: string, archives: ArchiveEntry[]) {
       updatedAt: archive.updatedAt,
       title: firstHeading.trim(),
       excerpt: summarizeText(raw, 320),
+      content: raw,
       visibility: 'public',
     })
   }
@@ -895,6 +913,68 @@ export async function createRoundPacket(root: string, viewer: ViewerSession, arg
   return createAiRoundPacket(root, args)
 }
 
+export async function checkSceneReadiness(root: string, submittedSeatName: string): Promise<SceneReadinessResult> {
+  const seatsFile = await loadSeats(root)
+  const controlFile = await loadControl(root)
+  const characters = await readAllCharacterSummaries(root)
+
+  // Find the scene for the submitting seat
+  const binding = controlFile.bindings.find((b) => b.primarySeat === submittedSeatName)
+  const character = binding ? characters.find((c) => c.path === binding.characterPath) : null
+  const sceneId = character?.sceneId || 'scene:default'
+
+  // Get all seats in this scene
+  const sceneBindings = controlFile.bindings.filter((b) => {
+    const ch = characters.find((c) => c.path === b.characterPath)
+    return ch?.sceneId === sceneId
+  })
+
+  const seatNames = [...new Set(sceneBindings.map((b) => b.primarySeat).filter(Boolean) as string[])]
+
+  const readySeats: Array<{ seatName: string; status: string }> = []
+  const notReadySeats: Array<{ seatName: string; status: string }> = []
+  const dmHostedSeats: Array<{ seatName: string }> = []
+
+  for (const seatName of seatNames) {
+    const seat = seatsFile.seats.find((s) => s.name === seatName)
+    if (!seat) continue
+
+    const binding = sceneBindings.find((b) => b.primarySeat === seatName)
+    
+    // Check if DM-hosted (character without primary seat, or intent says DM托管)
+    if (!binding || binding.dmHosted) {
+      dmHostedSeats.push({ seatName })
+      readySeats.push({ seatName, status: 'dm_hosted' })
+      continue
+    }
+
+    // Check if intent contains DM托管 marker
+    if (seat.status === 'submitted') {
+      const intent = await loadIntentForSeat(root, seatName)
+      if (intent.sections.public.includes(DM_HOSTED_MARKER) || intent.sections.privateToDm.includes(DM_HOSTED_MARKER)) {
+        dmHostedSeats.push({ seatName })
+        readySeats.push({ seatName, status: 'dm_hosted' })
+        continue
+      }
+    }
+
+    if (seat.status === 'submitted') {
+      readySeats.push({ seatName, status: 'submitted' })
+    } else {
+      notReadySeats.push({ seatName, status: seat.status })
+    }
+  }
+
+  return {
+    allReady: notReadySeats.length === 0,
+    sceneId,
+    totalSeats: seatNames.length,
+    readySeats,
+    notReadySeats,
+    dmHostedSeats,
+  }
+}
+
 export async function createAiRoundPacket(root: string, args: {
   seatNames?: string[]
   note?: string
@@ -909,12 +989,23 @@ export async function createAiRoundPacket(root: string, args: {
   const characters = await readAllCharacterSummaries(root)
   const sceneThreads = buildSceneThreads(seatsFile, controlFile, characters)
   const publicIntents = await buildPublicIntents(root, seatsFile, controlFile, characters)
-  const roundId = randomUUID()
+
   const seatNames = args.seatNames?.length
     ? args.seatNames
     : seatsFile.seats.filter((seat) => seat.role === 'player' && seat.status === 'submitted').map((seat) => seat.name)
+
   if (!seatNames.length) throw new Error('No submitted player intents to process')
 
+  // ─── Readiness check: all same-scene seats must be submitted or DM-hosted ───
+  for (const seatName of seatNames) {
+    const readiness = await checkSceneReadiness(root, seatName)
+    if (!readiness.allReady) {
+      const notReadyNames = readiness.notReadySeats.map((s) => s.seatName).join(', ')
+      throw new Error(`场景 ${readiness.sceneId} 尚未全部就绪。等待：${notReadyNames}`)
+    }
+  }
+
+  const roundId = randomUUID()
   const intents = await Promise.all(seatNames.map(async (seatName) => loadIntentForSeat(root, seatName)))
   const involvedSceneIds = new Set(publicIntents.filter((intent) => seatNames.includes(intent.seatName)).map((intent) => intent.sceneId))
   const involvedSeatNames = new Set(seatNames)
@@ -942,71 +1033,57 @@ export async function createAiRoundPacket(root: string, args: {
   })
   const packetPath = relPath(ROUNDS_DIR, roundId, 'packet.md')
   const resultPath = relPath(ROUNDS_DIR, roundId, 'result.md')
+  
+  // Build intent blocks (keep intent text inline - it's the core of what changed)
+  const intentBlocks = intents.flatMap((intent) => [
+    `### ${intent.seatName}`,
+    '',
+    '#### 公开行动',
+    intent.sections.public || '(empty)',
+    '',
+    '#### 私密意图（只给 AI DM）',
+    intent.sections.privateToDm || '(empty)',
+    '',
+    '#### 长期目标',
+    intent.sections.longTerm || '(empty)',
+    '',
+    '#### 触发条件',
+    intent.sections.triggers || '(empty)',
+    '',
+  ])
+  
+  // Build file references instead of inline character blocks
+  const characterRefs = bindings.map((binding) => {
+    const summary = characters.find((character) => character.path === binding.characterPath)
+    return `- **${binding.label}**: \`${binding.characterPath}\` | 位置: ${summary?.location || '未定位'} | 场景: ${summary?.sceneId || 'default'} | 分队: ${summary?.partyId || 'none'}`
+  })
+  
   const packet = [
-    '# AI DM 回合包',
+    '# AI DM 回合包（精简版）',
     '',
     `- round_id: ${roundId}`,
     `- generated_at: ${nowIso()}`,
-    '- host: AI DM',
     `- trigger_reason: ${args.reason || 'player-submitted'}`,
     `- submitted_seats: ${seatNames.join(', ')}`,
-    `- active_scene_seats: ${activeSeatNames.join(', ')}`,
-    `- result_path: ${resultPath}`,
-    '- conversation_policy: 每次处理都可开启新的 opencode 会话，但必须用本回合包、共享看板、角色卡和 table/conversations.md 承接连续性。',
-    '',
-    '## 房间状态',
-    `- title: ${room.title}`,
-    `- ruleset: ${room.ruleset}`,
-    `- phase: ${room.phase}`,
-    '',
-    '## AI 调度原则',
-    '- 没有人类 DM 选择玩家或裁定场景；你是唯一 AI DM。',
-    '- 优先处理同场景、可互相感知、时间上可同步的角色。',
-    '- 分队后生成独立场景线程；玩家只能看到自己角色可感知的信息。公开大事件再同步到共享看板。',
-    '- 本版执行可串行，但结果和状态写回必须保留 sceneId / partyId / location。',
-    '',
-    '## 场景线程',
-    '```json',
-    JSON.stringify(sceneThreads, null, 2),
-    '```',
-    '',
-    '## 公开行动同步',
-    '```json',
-    JSON.stringify(publicIntents, null, 2),
-    '```',
     '',
     '## 本次玩家意图',
-    ...intents.flatMap((intent) => [
-      `### ${intent.seatName}`,
-      '',
-      '#### 公开行动',
-      intent.sections.public || '(empty)',
-      '',
-      '#### 私密意图（只给 AI DM）',
-      intent.sections.privateToDm || '(empty)',
-      '',
-      '#### 长期目标',
-      intent.sections.longTerm || '(empty)',
-      '',
-      '#### 触发条件',
-      intent.sections.triggers || '(empty)',
-      '',
-    ]),
-    '## 本次涉及角色摘要',
-    ...characterBlocks,
+    ...intentBlocks,
     '',
-    '## 共享看板（只能把公开浓缩事实写回这里）',
-    await fs.readFile(absolute(root, SHARED_BOARD_FILE), 'utf8').catch(() => ''),
+    '## 涉及角色（按需读取角色卡获取完整状态）',
+    ...characterRefs,
     '',
-    '## 额外备注',
-    args.note?.trim() || '(none)',
+    '## 必须读取的文件',
+    '- dm_guide/启动注入_AI_DM.md',
+    '- dm_guide/DM速记_备忘.md（局面卡）',
+    '- rules/公式速查卡.md',
+    '- table/shared_board.md（当前公开局面）',
+    ...bindings.map((b) => `- ${b.characterPath}（角色状态：blood/energy/inventory/location）`),
     '',
     '## 输出要求',
-    `- 将完整 DM 回复写入 ${resultPath}。`,
-    '- 同步更新 table/shared_board.md，但只写公开摘要。',
-    '- 更新角色卡中的血槽、能量、背包、安全箱、语义状态、location、sceneId、partyId、visibilityScope。',
-    '- 在结果中标注被动处理的未提交角色。',
-    '- 本次调用会登记到 table/conversations.md。',
+    `- 将完整 DM 回复写入 \`${resultPath}\`（使用 Write 工具）`,
+    '- 更新 table/shared_board.md（只写公开浓缩事实）',
+    '- 更新涉及角色卡的前置元数据（blood, energy, inventory, location, sceneId, partyId）',
+    '- 在结果文件末尾追加：`<!-- ROUND_DONE {"round_id":"' + roundId + '","status":"ok"} -->`',
     '',
   ].join('\n')
 
@@ -1094,6 +1171,7 @@ export async function buildSnapshot(root: string, viewer: ViewerSession, visible
     publicIntents,
     sceneThreads,
     latestResults,
+    latestResultContent: latestResults.length > 0 ? latestResults[0].content : null,
     aiQueue,
     sharedBoard,
     archives,

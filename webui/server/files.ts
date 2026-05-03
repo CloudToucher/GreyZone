@@ -6,24 +6,31 @@ import {
   authenticateViewer,
   buildSnapshot,
   buildTree,
+  checkSceneReadiness,
   createAiRoundPacket,
   canWritePath,
   createRoundPacket,
+  DM_HOSTED_MARKER,
   enableDmConsole,
   ensureTableState,
+  finalizeSeatsAfterRound,
   joinSeat,
   loadIntentForSeat,
+  markRoomIdle,
   readVisibleFile,
+  reconcileTableFromCharacters,
   releaseSeat,
   respondToTransfer,
   saveIntentForSeat,
   updateSeatStatus,
+  loadSeatsFile,
   type IntentSections,
+  type SceneReadinessResult,
   type ViewerSession,
   writeVisibleFile,
 } from './core'
-import { runActionRound, runForgeRound, runOpencodeProbe } from './opencode'
-import { attachEventsStream, emitSnapshotRefresh, getVisibleRound } from './runtime'
+import { runActionRound, runAssistantQuery, runForgeRound, runOpencodeProbe, runWelcomeRound, startDmSession, writeDmTrigger, getDmSessionState, pollDmResult, startDmHeartbeat, stopDmHeartbeat, stopDmSession } from './opencode'
+import { attachEventsStream, beginRound, emitSnapshotRefresh, finishRound, getVisibleRound, appendRoundLog } from './runtime'
 
 async function readJsonBody(req: IncomingMessage, max = 4 * 1024 * 1024): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -161,6 +168,97 @@ export function filesMiddleware(workspaceRoot: string) {
         }
       }
 
+      if (req.method === 'POST' && route === '/game/enter') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const roundId = cryptoRandomId()
+        const result = await startDmSession({
+          workspaceRoot: root,
+          welcomeRoundId: roundId,
+        })
+        if (result.alreadyRunning) {
+          return sendJson(res, 200, { roundId: null, message: 'DM session already running' })
+        }
+        if ('error' in result && result.error) {
+          return sendJson(res, 500, { error: result.error })
+        }
+        const welcomePath = result.welcomeResultPath!
+        
+        // Start heartbeat monitoring
+        startDmHeartbeat(root, async () => {
+          appendRoundLog('meta', 'DM Session heartbeat lost — restarting session')
+          await stopDmSession()
+          stopDmHeartbeat()
+          // Restart DM session
+          const newRoundId = cryptoRandomId()
+          void startDmSession({
+            workspaceRoot: root,
+            welcomeRoundId: newRoundId,
+          })
+        })
+        
+        // Start polling for welcome result marker
+        pollDmResult(root, welcomePath, {
+          onDone: async (content, marker) => {
+            appendRoundLog('meta', 'DM Session welcome scene completed')
+            beginRound({
+              id: roundId,
+              kind: 'forge',
+              status: 'running',
+              startedAt: new Date().toISOString(),
+              participantSeats: [viewer.seatName],
+              packetPath: `table/rounds/${roundId}/packet.md`,
+              resultPath: welcomePath,
+              affectedFiles: [`table/rounds/${roundId}/result.md`],
+            })
+            finishRound({
+              status: 'done',
+              endedAt: new Date().toISOString(),
+              exitCode: 0,
+              resultPath: welcomePath,
+              resultContent: content,
+              resultMarker: marker,
+              affectedFiles: [`table/rounds/${roundId}/result.md`],
+            })
+            emitSnapshotRefresh('dm-session-welcome-ready')
+          },
+          onTimeout: async () => {
+            appendRoundLog('meta', 'DM Session welcome scene TIMEOUT')
+            emitSnapshotRefresh('dm-session-welcome-timeout')
+          },
+        })
+        emitSnapshotRefresh('enter-grey-zone')
+        return sendJson(res, 200, { roundId })
+      }
+
+      if (req.method === 'GET' && route === '/scene/readiness') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const readiness = await checkSceneReadiness(root, viewer.seatName)
+        return sendJson(res, 200, readiness)
+      }
+
+      if (req.method === 'POST' && route === '/assistant/ask') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const question = typeof body?.question === 'string' ? body.question.trim() : ''
+        if (!question) {
+          return sendJson(res, 400, { error: 'question is required' })
+        }
+        const charSummary = typeof body?.charSummary === 'string' ? body.charSummary : undefined
+        const roundId = cryptoRandomId()
+        void runAssistantQuery({
+          workspaceRoot: root,
+          viewer,
+          roundId,
+          question,
+          charSummary,
+        })
+        emitSnapshotRefresh('assistant-started')
+        return sendJson(res, 200, { roundId })
+      }
+
       if (req.method === 'GET' && route === '/session/snapshot') {
         const viewer = await requireViewer(root, req, res)
         if (!viewer) return
@@ -198,34 +296,108 @@ export function filesMiddleware(workspaceRoot: string) {
         let normalizedStatus: string | null = null
         if (typeof body?.status === 'string') {
           const normalized = body.status
-          if (normalized === 'idle' || normalized === 'ready' || normalized === 'submitted' || normalized === 'locked') {
+        
+          // If player saves while already submitted, revert to idle (they're editing their intent)
+          const seatsFile = await loadSeatsFile(root)
+          const currentSeat = seatsFile.seats.find((s) => s.name === viewer.seatName)
+          const wasSubmitted = currentSeat?.status === 'submitted'
+        
+          if (wasSubmitted && normalized !== 'submitted') {
+            // Player was ready but now saving with non-submitted status → intent was modified
+            await updateSeatStatus(root, viewer.seatName, 'idle')
+            normalizedStatus = 'idle'
+          } else if (normalized === 'idle' || normalized === 'ready' || normalized === 'submitted' || normalized === 'locked') {
             await updateSeatStatus(root, viewer.seatName, normalized)
             normalizedStatus = normalized
           }
         }
         emitSnapshotRefresh('intent-updated')
+        
         if (normalizedStatus === 'submitted') {
+          // Check scene readiness
+          const readiness = await checkSceneReadiness(root, viewer.seatName)
+          
+          if (!readiness.allReady) {
+            // Not all players ready — just acknowledge submission, don't fire yet
+            return sendJson(res, 200, {
+              intent,
+              readiness,
+              message: `场景 ${readiness.sceneId} 等待其他玩家就绪`,
+            })
+          }
+          
+          // All scene players ready — fire the round
           void (async () => {
             try {
               const packet = await createAiRoundPacket(root, { reason: `submitted:${viewer.seatName}` })
-              const aiViewer = { seatName: 'AI DM', role: 'dm' as const, token: '', dmEnabled: true }
-              void runActionRound({
-                workspaceRoot: root,
-                viewer: aiViewer,
-                roundId: packet.roundId,
-                seatNames: packet.seatNames,
-                packetPath: packet.packetPath,
-                resultPath: packet.resultPath,
-              })
+              const dmState = getDmSessionState()
+              
+              if (dmState.status === 'running') {
+                await writeDmTrigger({
+                  workspaceRoot: root,
+                  roundId: packet.roundId,
+                  packetPath: packet.packetPath,
+                  resultPath: packet.resultPath,
+                  seatNames: packet.seatNames,
+                })
+                pollDmResult(root, packet.resultPath, {
+                  onDone: async (content, marker) => {
+                    appendRoundLog('meta', `DM session round ${packet.roundId} completed via trigger file`)
+                    beginRound({
+                      id: packet.roundId,
+                      kind: 'action',
+                      status: 'running',
+                      startedAt: new Date().toISOString(),
+                      participantSeats: packet.seatNames,
+                      packetPath: packet.packetPath,
+                      resultPath: packet.resultPath,
+                      affectedFiles: [packet.packetPath, packet.resultPath],
+                    })
+                    finishRound({
+                      status: 'done',
+                      endedAt: new Date().toISOString(),
+                      exitCode: 0,
+                      resultPath: packet.resultPath,
+                      resultContent: content,
+                      resultMarker: marker,
+                      affectedFiles: [packet.packetPath, packet.resultPath],
+                    })
+                    await reconcileTableFromCharacters(root)
+                    await finalizeSeatsAfterRound(root, packet.seatNames)
+                    await markRoomIdle(root)
+                    emitSnapshotRefresh('dm-session-round-done')
+                  },
+                  onTimeout: async () => {
+                    appendRoundLog('meta', `DM session round ${packet.roundId} TIMEOUT waiting for marker`)
+                    emitSnapshotRefresh('dm-session-round-timeout')
+                  },
+                })
+              } else {
+                const aiViewer = { seatName: 'AI DM', role: 'dm' as const, token: '', dmEnabled: true }
+                void runActionRound({
+                  workspaceRoot: root,
+                  viewer: aiViewer,
+                  roundId: packet.roundId,
+                  seatNames: packet.seatNames,
+                  packetPath: packet.packetPath,
+                  resultPath: packet.resultPath,
+                })
+              }
               emitSnapshotRefresh('ai-round-started')
             } catch (error: any) {
               const message = String(error?.message || error)
-              if (!/already processing|No submitted/.test(message)) {
+              if (!/already processing|尚未全部就绪/.test(message)) {
                 console.error('[gray-zone-ai-auto]', error)
               }
               emitSnapshotRefresh('ai-round-skipped')
             }
           })()
+          
+          return sendJson(res, 200, {
+            intent,
+            readiness,
+            message: '全部就绪，已触发 AI DM 处理',
+          })
         }
         return sendJson(res, 200, intent)
       }

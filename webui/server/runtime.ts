@@ -17,6 +17,8 @@ export interface VisibleRoundState {
   participantSeats: string[]
   packetPath?: string
   resultPath?: string
+  resultContent?: string
+  resultMarker?: Record<string, unknown> | null
   affectedFiles: string[]
   logs?: Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string; ts: number }>
 }
@@ -37,6 +39,8 @@ interface RoundState {
   participantSeats: string[]
   packetPath?: string
   resultPath?: string
+  resultContent?: string
+  resultMarker?: Record<string, unknown> | null
   affectedFiles: string[]
   logs: Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string; ts: number }>
 }
@@ -64,6 +68,8 @@ function publicRound(round: RoundState): VisibleRoundState {
     participantSeats: round.participantSeats,
     packetPath: round.packetPath,
     resultPath: round.resultPath,
+    resultContent: round.resultContent,
+    resultMarker: round.resultMarker,
     affectedFiles: round.affectedFiles,
   }
 }
@@ -126,6 +132,8 @@ export function finishRound(update: {
   exitCode?: number | null
   error?: string | null
   resultPath?: string
+  resultContent?: string
+  resultMarker?: Record<string, unknown> | null
   affectedFiles?: string[]
 }) {
   if (!activeRound) return
@@ -134,6 +142,8 @@ export function finishRound(update: {
   activeRound.exitCode = update.exitCode
   activeRound.error = update.error ?? null
   if (update.resultPath) activeRound.resultPath = update.resultPath
+  if (update.resultContent !== undefined) activeRound.resultContent = update.resultContent
+  if (update.resultMarker !== undefined) activeRound.resultMarker = update.resultMarker
   if (update.affectedFiles) activeRound.affectedFiles = update.affectedFiles
   emitRoundUpdate()
   emitSnapshotRefresh('round-finished')

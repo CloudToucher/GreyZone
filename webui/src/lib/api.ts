@@ -114,6 +114,7 @@ export interface LatestResultSummary {
   updatedAt: string
   title: string
   excerpt: string
+  content: string
   visibility: 'public' | 'scene' | 'private'
 }
 
@@ -162,6 +163,7 @@ export interface RoomSnapshot {
   publicIntents: PublicIntentSummary[]
   sceneThreads: SceneThread[]
   latestResults: LatestResultSummary[]
+  latestResultContent: string | null
   aiQueue: AiQueueItem[]
   sharedBoard: FilePayload | null
   archives: Array<{
@@ -186,6 +188,8 @@ export interface VisibleRoundState {
   participantSeats: string[]
   packetPath?: string
   resultPath?: string
+  resultContent?: string
+  resultMarker?: Record<string, unknown> | null
   affectedFiles: string[]
   logs?: Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string; ts: number }>
 }
@@ -276,6 +280,31 @@ export async function enableDmConsoleSession(session: SessionCredentials, roomCo
   return sendJson<{ session: SessionCredentials }>('/api/session/enable-dm', 'POST', { roomCode }, session)
 }
 
+export async function enterGreyZone(session: SessionCredentials) {
+  return sendJson<{ roundId: string }>('/api/game/enter', 'POST', {}, session)
+}
+
+export async function askAssistant(
+  session: SessionCredentials,
+  question: string,
+  charSummary?: string,
+) {
+  return sendJson<{ roundId: string }>('/api/assistant/ask', 'POST', { question, charSummary }, session)
+}
+
+export interface SceneReadinessResult {
+  allReady: boolean
+  sceneId: string
+  totalSeats: number
+  readySeats: Array<{ seatName: string; status: string }>
+  notReadySeats: Array<{ seatName: string; status: string }>
+  dmHostedSeats: Array<{ seatName: string }>
+}
+
+export async function fetchSceneReadiness(session: SessionCredentials) {
+  return getJson<SceneReadinessResult>('/api/scene/readiness', session)
+}
+
 export async function fetchSnapshot(session: SessionCredentials) {
   return getJson<RoomSnapshot>('/api/session/snapshot', session)
 }
@@ -289,7 +318,7 @@ export async function saveMyIntent(
   sections: IntentSections,
   status?: 'idle' | 'ready' | 'submitted' | 'locked',
 ) {
-  return sendJson<IntentDocument>('/api/intents/self', 'PUT', { sections, status }, session)
+  return sendJson<IntentDocument & { readiness?: SceneReadinessResult; message?: string }>('/api/intents/self', 'PUT', { sections, status }, session)
 }
 
 export async function assignCharacter(
