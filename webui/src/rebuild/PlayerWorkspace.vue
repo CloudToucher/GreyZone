@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { CharacterSummary, ForgePayload, IntentSections, RoomSnapshot, SessionCredentials, VisibleRoundState, SceneReadinessResult } from '@/lib/api'
+import type { CharacterAction, CharacterSummary, ForgePayload, IntentSections, RoomSnapshot, SessionCredentials, VisibleRoundState, SceneReadinessResult } from '@/lib/api'
 import { askAssistant, fetchSceneReadiness } from '@/lib/api'
 import RenderedMarkdown from './RenderedMarkdown.vue'
 
@@ -20,10 +20,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   saveIntent: [sections: IntentSections, status?: 'idle' | 'ready' | 'submitted']
+  submitCharacterActions: [actions: CharacterAction[]]
   respondTransfer: [characterPath: string, accept: boolean]
   runForge: [payload: ForgePayload]
   openFile: [path: string]
-  enterGreyZone: []
+  enterGreyZone: [characterPaths: string[]]
 }>()
 
 const intent = reactive<IntentSections>({ public: '', privateToDm: '', longTerm: '', triggers: '' })
@@ -55,13 +56,50 @@ const controlledCharacters = computed(() =>
     props.snapshot.control.some((binding) => binding.characterPath === character.path && binding.primarySeat === props.session.seatName),
   ),
 )
+const activeCharacters = computed(() => controlledCharacters.value.filter((character) => character.inGame || character.lifecycle === 'active'))
+const pendingCharacters = computed(() => controlledCharacters.value.filter((character) => !character.inGame && character.lifecycle !== 'active'))
+
+const characterActions = reactive<Record<string, CharacterAction>>({})
+
+watch(
+  controlledCharacters,
+  (characters) => {
+    const active = new Set(characters.map((character) => character.path))
+    for (const key of Object.keys(characterActions)) {
+      if (!active.has(key)) delete characterActions[key]
+    }
+    for (const character of characters) {
+      if (!characterActions[character.path]) {
+        characterActions[character.path] = {
+          characterPath: character.path,
+          characterName: character.name,
+          playerSeat: props.session.seatName,
+          publicAction: intent.public,
+          privateToDm: intent.privateToDm,
+          longTerm: intent.longTerm,
+          triggers: intent.triggers,
+          aiHosted: false,
+        }
+      } else {
+        characterActions[character.path].characterName = character.name
+        characterActions[character.path].playerSeat = props.session.seatName
+      }
+    }
+  },
+  { immediate: true },
+)
 
 const seatStatus = computed(() =>
   props.snapshot.seats.find((seat) => seat.name === props.session.seatName)?.status || 'idle',
 )
 
-const latestResult = computed(() => props.snapshot.latestResults[0] || null)
-const sceneIds = computed(() => new Set(controlledCharacters.value.map((character) => character.sceneId)))
+const latestAssistantResult = computed(() =>
+  (props.snapshot.latestResults || []).find((result) => result.kind === 'assistant') || null,
+)
+const latestNarrativeResult = computed(() =>
+  (props.snapshot.latestResults || []).find((result) => result.kind !== 'assistant') || null,
+)
+const sceneIds = computed(() => new Set(activeCharacters.value.map((character) => character.sceneId)))
 const sceneIntents = computed(() =>
   props.snapshot.publicIntents.filter((entry) => sceneIds.value.size === 0 || sceneIds.value.has(entry.sceneId) || entry.seatName === props.session.seatName),
 )
@@ -70,10 +108,12 @@ const sceneIntents = computed(() =>
 const readiness = ref<SceneReadinessResult | null>(null)
 const readinessMessage = ref<string | null>(null)
 let readinessTimer: ReturnType<typeof setInterval> | null = null
+const nowTick = ref(Date.now())
+let monitorTimer: ReturnType<typeof setInterval> | null = null
 
 function startReadinessPolling() {
   stopReadinessPolling()
-  if (!controlledCharacters.value.length) return
+  if (!activeCharacters.value.length) return
   const poll = async () => {
     try {
       const result = await fetchSceneReadiness(props.session)
@@ -91,12 +131,21 @@ function stopReadinessPolling() {
   }
 }
 
-watch(controlledCharacters, (chars) => {
+watch(activeCharacters, (chars) => {
   if (chars.length) startReadinessPolling()
   else stopReadinessPolling()
 }, { immediate: true })
 
-onBeforeUnmount(() => stopReadinessPolling())
+onMounted(() => {
+  monitorTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 2000)
+})
+
+onBeforeUnmount(() => {
+  stopReadinessPolling()
+  if (monitorTimer) clearInterval(monitorTimer)
+})
 
 const statusText: Record<string, string> = {
   idle: '编辑中',
@@ -115,6 +164,43 @@ const statusColor: Record<string, string> = {
   submitted: 'text-navy-700 font-bold',
   locked: 'text-ochre-600',
   dm_hosted: 'text-paper-500 italic',
+}
+
+const agentStatusRuns = computed(() => {
+  const active = props.snapshot.activeAgentRuns || []
+  if (active.length) return active
+  return (props.snapshot.agentRuns || []).slice(0, 3)
+})
+
+function agentKindLabel(kind: string) {
+  if (kind === 'contract_onboarding') return '进入灰区'
+  if (kind === 'forge') return '创建角色'
+  if (kind === 'action') return '行动回合'
+  if (kind === 'assistant') return '规则助手'
+  return kind
+}
+
+function formatMs(ms: number | null | undefined) {
+  if (ms == null) return '未开始'
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes ? `${minutes}分${rest.toString().padStart(2, '0')}秒` : `${rest}秒`
+}
+
+function elapsedFor(run: { startedAt: string | null; createdAt: string; endedAt: string | null; elapsedMs: number | null; durationMs: number | null }) {
+  if (run.endedAt) return formatMs(run.durationMs ?? run.elapsedMs)
+  const start = new Date(run.startedAt || run.createdAt).getTime()
+  if (Number.isNaN(start)) return formatMs(run.elapsedMs)
+  return formatMs(nowTick.value - start)
+}
+
+function agentTone(status: string, stale: boolean) {
+  if (stale || status === 'stale') return 'border-ochre-400 bg-ochre-50 text-ochre-800'
+  if (status === 'error') return 'border-crimson-300 bg-crimson-50 text-crimson-800'
+  if (status === 'done') return 'border-forest-300 bg-forest-50 text-forest-800'
+  if (status === 'running' || status === 'validating') return 'border-navy-300 bg-navy-50 text-navy-800'
+  return 'border-paper-300 bg-paper-100 text-paper-800'
 }
 
 // Track if intent was modified after being submitted
@@ -157,14 +243,36 @@ watch(
       assistantReply.value = props.round.resultContent
       assistantBusy.value = false
     }
-    if (marker && (marker.type === 'ROUND_DONE' || marker.phase === 'welcome')) {
-      enterBusy.value = false
-    }
   },
 )
 
+const enteringCharacterPaths = computed(() => new Set(
+  (props.snapshot.activeAgentRuns || [])
+    .filter((run) => run.kind === 'contract_onboarding')
+    .flatMap((run) => run.participantCharacters.map((character) => character.path)),
+))
+
+const enterablePendingCharacters = computed(() =>
+  pendingCharacters.value.filter((character) => !enteringCharacterPaths.value.has(character.path)),
+)
+const selectedEnterPaths = ref<string[]>([])
+const selectedEnterablePaths = computed(() => {
+  const enterable = new Set(enterablePendingCharacters.value.map((character) => character.path))
+  return selectedEnterPaths.value.filter((path) => enterable.has(path))
+})
+
+watch(
+  [pendingCharacters, enteringCharacterPaths],
+  () => {
+    const pending = new Set(pendingCharacters.value.map((character) => character.path))
+    selectedEnterPaths.value = selectedEnterPaths.value.filter((path) => pending.has(path) && !enteringCharacterPaths.value.has(path))
+  },
+  { deep: true },
+)
+
 const playHint = computed(() => {
-  if (!controlledCharacters.value.length) return '先创建角色。角色卡生成后，这里会变成关键 HUD，并提示你提交第一步行动。'
+  if (!controlledCharacters.value.length) return '先创建角色。角色卡生成后，它只是候选角色；需要让某个角色进入灰区并完成合同，才会加入同步游戏。'
+  if (!activeCharacters.value.length) return '选择一个角色进入灰区，AI DM 会以该角色为主体处理合同开局。签约后才可以提交同步行动。'
   if (seatStatus.value === 'locked') return 'AI DM 正在处理当前场景。等待 DM 回复和角色状态写回。'
   if (seatStatus.value === 'submitted') {
     if (readiness.value && !readiness.value.allReady) {
@@ -176,15 +284,53 @@ const playHint = computed(() => {
   return '在下面写好行动 → 点击"公开草稿"让同场景玩家看到 → 点击"就绪"提交给 AI DM'
 })
 
+function draftFromCharacterActions() {
+  const actions = activeCharacters.value.map((character) => characterActions[character.path]).filter(Boolean)
+  if (!actions.length) return { ...intent }
+  const format = (key: 'publicAction' | 'privateToDm' | 'longTerm' | 'triggers') => actions
+    .map((action) => {
+      const text = action[key]?.trim()
+      return text ? `【${action.characterName}】\n${text}` : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+  return {
+    public: format('publicAction') || intent.public,
+    privateToDm: format('privateToDm') || intent.privateToDm,
+    longTerm: format('longTerm') || intent.longTerm,
+    triggers: format('triggers') || intent.triggers,
+  }
+}
+
 function save(status?: 'idle' | 'ready' | 'submitted') {
   intentModified.value = false
   if (status === 'submitted') {
     readinessMessage.value = null
   }
-  emit('saveIntent', { ...intent }, status)
+  emit('saveIntent', draftFromCharacterActions(), status)
 }
 
-const enterBusy = ref(false)
+function submitActions() {
+  const actions = activeCharacters.value.map((character) => characterActions[character.path]).filter(Boolean)
+  if (!actions.length) return
+  intentModified.value = false
+  emit('submitCharacterActions', actions.map((action) => ({ ...action })))
+}
+
+function enterCharacters(characterPaths: string[]) {
+  const paths = characterPaths.filter((path) => !enteringCharacterPaths.value.has(path))
+  if (!paths.length) return
+  selectedEnterPaths.value = selectedEnterPaths.value.filter((path) => !paths.includes(path))
+  emit('enterGreyZone', paths)
+}
+
+function enterCharacter(characterPath: string) {
+  enterCharacters([characterPath])
+}
+
+function enterSelectedCharacters() {
+  enterCharacters(selectedEnterablePaths.value)
+}
 
 function submitForge() {
   emit('runForge', { ...forge })
@@ -239,25 +385,54 @@ function bloodLabel(character: CharacterSummary) {
           <div>
             <div class="font-mono text-[10px] uppercase tracking-[0.18em] text-crimson-700">下一步</div>
             <div class="mt-1 font-serif text-2xl font-bold text-paper-950">
-              {{ controlledCharacters.length ? '提交行动，等待 AI DM 调度' : '先创建角色' }}
+              {{ activeCharacters.length ? '提交行动，等待 AI DM 调度' : controlledCharacters.length ? '选择角色进入灰区' : '先创建角色' }}
             </div>
             <div class="mt-2 max-w-3xl text-sm leading-7 text-paper-800">{{ playHint }}</div>
           </div>
           <div class="flex flex-wrap gap-2">
-            <button
-              v-if="controlledCharacters.length"
-              @click="enterBusy = true; emit('enterGreyZone')"
-              :disabled="busy || enterBusy"
-              class="rounded-sm border border-navy-800 bg-navy-800 px-5 py-3 text-center font-mono text-[13px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
-            >
-              {{ enterBusy ? '正在进入灰区...' : '进入灰区' }}
-            </button>
             <button
               @click="forgeOpen = !forgeOpen"
               class="rounded-sm border border-crimson-700 bg-crimson-600 px-5 py-3 text-center font-mono text-[13px] font-bold tracking-[0.12em] text-white hover:bg-crimson-700"
             >
               {{ forgeOpen ? '收起创建角色' : '创建角色' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="clash-card overflow-hidden">
+        <div class="clash-card-header px-4 py-3">
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">Agent 状态</div>
+          <div class="mt-1 text-sm text-white/80">这里显示与你当前席位或角色相关的 AI 任务。</div>
+        </div>
+        <div class="space-y-2 p-4">
+          <article
+            v-for="run in agentStatusRuns"
+            :key="run.id"
+            class="rounded-sm border p-3"
+            :class="agentTone(run.status, run.stale)"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
+                <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
+                  {{ run.agentName }} · {{ agentKindLabel(run.kind) }} · {{ run.currentStep }}
+                </div>
+              </div>
+              <div class="shrink-0 text-right font-mono text-[10px] leading-5">
+                <div>{{ run.stale ? '可能卡住' : run.status }}</div>
+                <div>{{ elapsedFor(run) }}</div>
+              </div>
+            </div>
+            <div class="mt-2 text-xs leading-5 text-paper-700">
+              参与角色：{{ run.participantCharacters.map((character) => character.name).join('、') || '未绑定角色' }}
+              <span class="mx-1">·</span>
+              最后事件：{{ run.lastEventAt ? new Date(run.lastEventAt).toLocaleTimeString('zh-CN', { hour12: false }) : '暂无' }}
+            </div>
+            <div v-if="run.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 px-2 py-1 text-xs text-crimson-700">{{ run.error }}</div>
+          </article>
+          <div v-if="!agentStatusRuns.length" class="text-sm leading-7 text-paper-800">
+            当前没有与你相关的 Agent 任务。创建角色、进入灰区或提交角色行动后，这里会显示状态和耗时。
           </div>
         </div>
       </div>
@@ -281,7 +456,7 @@ function bloodLabel(character: CharacterSummary) {
         <div class="clash-card-header px-4 py-3">
           <div class="font-mono text-[10px] font-bold tracking-[0.18em]">当前叙事</div>
           <div class="mt-1 text-sm text-white/80">
-            最近一次 DM 回复 · 共 {{ snapshot.latestResults.length }} 条记录
+            最近一次 DM 回复 · 共 {{ snapshot.latestResults.filter((result) => result.kind !== 'assistant').length }} 条记录
           </div>
         </div>
         <div class="p-4">
@@ -289,15 +464,15 @@ function bloodLabel(character: CharacterSummary) {
         </div>
       </div>
 
-      <div v-else-if="latestResult" class="clash-card overflow-hidden">
+      <div v-else-if="latestNarrativeResult" class="clash-card overflow-hidden">
         <div class="clash-card-header px-4 py-3">
           <div class="font-mono text-[10px] font-bold tracking-[0.18em]">DM 回复</div>
-          <button @click="emit('openFile', latestResult.path)" class="mt-1 text-left text-sm text-white/85 hover:text-white">
-            {{ latestResult.title }} · {{ new Date(latestResult.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+          <button @click="emit('openFile', latestNarrativeResult.path)" class="mt-1 text-left text-sm text-white/85 hover:text-white">
+            {{ latestNarrativeResult.title }} · {{ new Date(latestNarrativeResult.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
           </button>
         </div>
         <div class="p-4 text-sm leading-7 text-paper-850">
-          {{ latestResult.excerpt || '打开结果文件查看完整回复。' }}
+          {{ latestNarrativeResult.excerpt || '打开结果文件查看完整回复。' }}
         </div>
       </div>
 
@@ -310,7 +485,17 @@ function bloodLabel(character: CharacterSummary) {
               {{ controlledCharacters.length ? `${controlledCharacters.length} 个可控角色` : '尚未绑定角色' }}
             </div>
           </div>
-          <span class="stamp text-paper-800">席位：{{ statusText[seatStatus] || seatStatus }}</span>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="pendingCharacters.length > 1"
+              @click="enterSelectedCharacters"
+              :disabled="busy || !selectedEnterablePaths.length"
+              class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
+            >
+              批量进入灰区（{{ selectedEnterablePaths.length }}）
+            </button>
+            <span class="stamp text-paper-800">席位：{{ statusText[seatStatus] || seatStatus }}</span>
+          </div>
         </div>
 
         <div v-if="controlledCharacters.length" class="mt-4 grid gap-3">
@@ -322,12 +507,35 @@ function bloodLabel(character: CharacterSummary) {
                   {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
                 </div>
               </div>
+              <label
+                v-if="!character.inGame && character.lifecycle !== 'active'"
+                class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-paper-800"
+                :class="enteringCharacterPaths.has(character.path) ? 'opacity-40' : ''"
+              >
+                <input
+                  v-model="selectedEnterPaths"
+                  :value="character.path"
+                  :disabled="busy || enteringCharacterPaths.has(character.path)"
+                  type="checkbox"
+                  class="accent-navy-800"
+                />
+                加入批量
+              </label>
               <button
                 @click="emit('openFile', character.path)"
                 class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
               >
                 角色详情
               </button>
+              <button
+                v-if="!character.inGame && character.lifecycle !== 'active'"
+                @click="enterCharacter(character.path)"
+                :disabled="busy || enteringCharacterPaths.has(character.path)"
+                class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
+              >
+                {{ enteringCharacterPaths.has(character.path) ? '合同处理中...' : '该角色进入灰区' }}
+              </button>
+              <span v-else class="stamp text-forest-700">已入局</span>
             </div>
 
             <div class="mt-4">
@@ -430,7 +638,7 @@ function bloodLabel(character: CharacterSummary) {
               {{ entry.publicText || '尚未写公开行动。' }}
             </div>
           </article>
-          <div v-if="!sceneIntents.length && controlledCharacters.length" class="text-sm text-paper-600 px-1">
+          <div v-if="!sceneIntents.length && activeCharacters.length" class="text-sm text-paper-600 px-1">
             等待其他玩家加入此场景...
           </div>
         </div>
@@ -438,21 +646,42 @@ function bloodLabel(character: CharacterSummary) {
 
       <div class="clash-card overflow-hidden">
         <div class="clash-card-header px-4 py-3">
-          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">提交行动</div>
-          <div class="mt-1 text-sm text-white/80">写公开行动 → 公开草稿 → 就绪。同场景全部就绪后自动触发 AI DM。</div>
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">角色行动卡</div>
+          <div class="mt-1 text-sm text-white/80">玩家是输入者；角色才是行动主体。每个受控角色可以单独写行动。</div>
         </div>
         <div class="space-y-4 p-4">
-          <label class="space-y-1">
-            <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">公开行动（同场景玩家可见）</div>
-            <textarea v-model="intent.public" rows="5" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="写给同场景玩家也能看到的行动草案。如果想让 AI DM 托管此角色，在这里写「AI DM托管状态」。" />
-          </label>
-          <label class="space-y-1">
-            <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
-            <textarea v-model="intent.privateToDm" rows="4" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="只给 AI DM 的真实意图、隐瞒、试探或条件。" />
-          </label>
-          <div class="grid gap-3 md:grid-cols-2">
-            <textarea v-model="intent.longTerm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="长期目标" />
-            <textarea v-model="intent.triggers" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="触发条件" />
+          <div v-if="activeCharacters.length" class="space-y-3">
+            <article v-for="character in activeCharacters" :key="`action-${character.path}`" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div class="font-serif text-base font-bold text-paper-950">{{ character.name }}</div>
+                  <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
+                    {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
+                  </div>
+                </div>
+                <label class="inline-flex items-center gap-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                  <input v-model="characterActions[character.path].aiHosted" type="checkbox" class="accent-navy-800" />
+                  AI 托管
+                </label>
+              </div>
+              <div class="mt-3 grid gap-3">
+                <label class="space-y-1">
+                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">公开行动（同场景可见）</div>
+                  <textarea v-model="characterActions[character.path].publicAction" rows="4" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="这个角色现在做什么。例：影子拿起笔仔细阅读合同条款，然后询问安全箱赔付边界。" />
+                </label>
+                <label class="space-y-1">
+                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
+                  <textarea v-model="characterActions[character.path].privateToDm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="只给 AI DM 的真实目的、试探、隐瞒或底线。" />
+                </label>
+                <div class="grid gap-3 md:grid-cols-2">
+                  <textarea v-model="characterActions[character.path].longTerm" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="长期目标，例如：找到妹妹的线索。" />
+                  <textarea v-model="characterActions[character.path].triggers" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="触发条件，例如：如果职员回避安全箱问题就追问。" />
+                </div>
+              </div>
+            </article>
+          </div>
+          <div v-else class="rounded-sm border border-dashed border-paper-400 bg-paper-100 p-4 text-sm leading-7 text-paper-800">
+            还没有已入局角色。先创建角色，然后让该角色进入灰区完成合同；签约后 WebUI 才会开放同步行动卡。
           </div>
           <div v-if="intentModified && seatStatus === 'submitted'" class="rounded-sm border border-ochre-300 bg-ochre-50 px-3 py-2 text-sm text-ochre-800">
             意图已修改。请先保存草稿，然后重新点击"就绪"。
@@ -460,7 +689,7 @@ function bloodLabel(character: CharacterSummary) {
           <div class="flex flex-wrap items-center gap-2">
             <button @click="save()" :disabled="busy" class="rounded-sm border border-paper-300 bg-white px-3 py-1.5 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 disabled:opacity-40">保存草稿</button>
             <button @click="save('ready')" :disabled="busy" class="rounded-sm border border-forest-600 bg-forest-600 px-3 py-1.5 font-mono text-[10px] font-bold tracking-[0.12em] text-white disabled:opacity-40">公开草稿</button>
-            <button @click="save('submitted')" :disabled="busy || !controlledCharacters.length" class="rounded-sm border border-navy-800 bg-navy-800 px-4 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-white disabled:opacity-40">就绪</button>
+            <button @click="submitActions" :disabled="busy || !activeCharacters.length" class="rounded-sm border border-navy-800 bg-navy-800 px-4 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-white disabled:opacity-40">提交已入局角色行动给 AI DM</button>
             <span class="font-mono text-[10px] tracking-[0.18em]" :class="statusColor[seatStatus] || 'text-paper-800'">
               {{ statusText[seatStatus] || seatStatus }}
             </span>
@@ -532,6 +761,20 @@ function bloodLabel(character: CharacterSummary) {
           </div>
           <div v-if="assistantReply" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
             <RenderedMarkdown :content="assistantReply" compact max-height="28rem" />
+          </div>
+          <div v-else-if="latestAssistantResult" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-paper-300 pb-2">
+              <div class="font-mono text-[10px] font-bold tracking-[0.14em] text-paper-700">
+                最新规则助手回复 · {{ new Date(latestAssistantResult.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+              </div>
+              <button
+                @click="emit('openFile', latestAssistantResult.path)"
+                class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800"
+              >
+                解析结果
+              </button>
+            </div>
+            <RenderedMarkdown :content="latestAssistantResult.content" compact max-height="28rem" />
           </div>
         </div>
       </div>

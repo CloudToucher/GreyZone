@@ -7,3 +7,10 @@ bindings:
     visibleTo:
       - 习风
     pendingTransfer: null
+  - characterPath: characters/active/胡明.md
+    label: 胡明
+    primarySeat: 习风
+    dmHosted: false
+    visibleTo:
+      - 习风
+    pendingTransfer: null

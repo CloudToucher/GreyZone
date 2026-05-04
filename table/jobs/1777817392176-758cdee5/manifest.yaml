@@ -1,0 +1,32 @@
+id: 1777817392176-758cdee5
+kind: contract_onboarding
+title: 进入灰区 / 合同开局 | 习风 | 2026/5/3 22:09:52
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-03T14:09:52.176Z'
+updatedAt: '2026-05-03T19:12:42.563Z'
+startedAt: '2026-05-03T14:09:52.196Z'
+endedAt: '2026-05-03T14:19:52.251Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters:
+  - name: 影子
+    path: characters/active/影子.md
+    controller: 习风
+    sceneId: 围栏镇基地_营房
+    partyId: 影子
+artifacts:
+  manifest: table/jobs/1777817392176-758cdee5/manifest.yaml
+  packet: table/jobs/1777817392176-758cdee5/packet.md
+  prompt: table/jobs/1777817392176-758cdee5/prompt.md
+  rawResult: table/jobs/1777817392176-758cdee5/result.raw.md
+  parsedResult: table/jobs/1777817392176-758cdee5/result.parsed.json
+  stdout: table/jobs/1777817392176-758cdee5/stdout.log
+  stderr: table/jobs/1777817392176-758cdee5/stderr.log
+  events: table/jobs/1777817392176-758cdee5/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

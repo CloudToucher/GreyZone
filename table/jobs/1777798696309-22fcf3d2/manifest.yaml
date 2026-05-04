@@ -1,0 +1,27 @@
+id: 1777798696309-22fcf3d2
+kind: forge
+title: AI 创建角色 | 习风 | 2026/5/3 16:58:16
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-03T08:58:16.310Z'
+updatedAt: '2026-05-03T10:09:08.510Z'
+startedAt: '2026-05-03T08:58:16.310Z'
+endedAt: '2026-05-03T10:09:08.510Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters: []
+artifacts:
+  manifest: table/jobs/1777798696309-22fcf3d2/manifest.yaml
+  packet: table/jobs/1777798696309-22fcf3d2/packet.md
+  prompt: table/jobs/1777798696309-22fcf3d2/prompt.md
+  rawResult: table/jobs/1777798696309-22fcf3d2/result.raw.md
+  parsedResult: table/jobs/1777798696309-22fcf3d2/result.parsed.json
+  stdout: table/jobs/1777798696309-22fcf3d2/stdout.log
+  stderr: table/jobs/1777798696309-22fcf3d2/stderr.log
+  events: table/jobs/1777798696309-22fcf3d2/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

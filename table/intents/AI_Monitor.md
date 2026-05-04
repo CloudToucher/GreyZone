@@ -1,6 +1,6 @@
 ---
 seat: AI Monitor
-updated_at: 2026-05-03T06:51:21.527Z
+updated_at: 2026-05-03T08:39:48.407Z
 ---
 
 # Intent Workspace

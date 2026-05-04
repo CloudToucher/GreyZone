@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { FilePayload, OpencodeProbeResult, RoomSnapshot, SessionCredentials, VisibleRoundState } from '@/lib/api'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import type { AgentRunSummary, FilePayload, OpencodeProbeResult, RoomSnapshot, SessionCredentials, VisibleRoundState } from '@/lib/api'
 import RenderedMarkdown from './RenderedMarkdown.vue'
 
 const props = defineProps<{
@@ -26,7 +26,9 @@ const emit = defineEmits<{
   probe: []
 }>()
 
-const opsView = ref<'queue' | 'probe' | 'program' | 'round'>('queue')
+const opsView = ref<'agents' | 'queue' | 'probe' | 'program' | 'timeline'>('agents')
+const nowTick = ref(Date.now())
+let monitorTimer: ReturnType<typeof setInterval> | null = null
 
 const statusText: Record<string, string> = {
   idle: '待行动',
@@ -38,6 +40,57 @@ const statusText: Record<string, string> = {
   running: '运行中',
   done: '完成',
   error: '错误',
+  validating: '解析中',
+  stale: '可能卡住',
+}
+
+onMounted(() => {
+  monitorTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 2000)
+})
+
+onBeforeUnmount(() => {
+  if (monitorTimer) clearInterval(monitorTimer)
+})
+
+const agentRuns = computed(() => props.snapshot.agentRuns || [])
+const runningCount = computed(() => agentRuns.value.filter((run) => run.status === 'running' || run.status === 'validating').length)
+const waitingCount = computed(() => agentRuns.value.filter((run) => run.status === 'waiting').length)
+const unhealthyCount = computed(() => agentRuns.value.filter((run) => run.status === 'error' || run.stale).length)
+const latestDone = computed(() => agentRuns.value.find((run) => run.status === 'done' && run.durationMs != null))
+
+function formatMs(ms: number | null | undefined) {
+  if (ms == null) return '未开始'
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes ? `${minutes}分${rest.toString().padStart(2, '0')}秒` : `${rest}秒`
+}
+
+function elapsedFor(run: AgentRunSummary) {
+  if (run.endedAt) return formatMs(run.durationMs ?? run.elapsedMs)
+  const start = new Date(run.startedAt || run.createdAt).getTime()
+  if (Number.isNaN(start)) return formatMs(run.elapsedMs)
+  return formatMs(nowTick.value - start)
+}
+
+function runTone(run: AgentRunSummary) {
+  if (run.stale || run.status === 'stale') return 'border-ochre-400 bg-ochre-50'
+  if (run.status === 'error') return 'border-crimson-300 bg-crimson-50'
+  if (run.status === 'done') return 'border-forest-300 bg-forest-50'
+  if (run.status === 'running' || run.status === 'validating') return 'border-navy-300 bg-navy-50'
+  return 'border-paper-300 bg-paper-100'
+}
+
+function artifactPath(run: AgentRunSummary, name: string) {
+  return run.artifacts?.[name] || ''
+}
+
+function artifactLabel(run: AgentRunSummary, name: string) {
+  const stat = run.artifactStats.find((entry) => entry.name === name)
+  if (!stat) return name
+  return `${name} ${stat.exists ? `${stat.size}B` : 'missing'}`
 }
 
 const probeStatusLabel = computed(() => {
@@ -93,21 +146,26 @@ function retryQueueItem(id: string) {
           <div class="font-mono text-[10px] font-bold tracking-[0.18em]">AI 监控台</div>
           <div class="mt-1 text-sm text-white/85">这里只观察 AI DM 的后台状态、队列、日志和归档；不选择玩家、不裁定场景。</div>
         </div>
-        <div class="grid gap-3 p-4 md:grid-cols-3">
+        <div class="grid gap-3 p-4 md:grid-cols-4">
           <div class="data-card">
-            <div class="data-card-label"><span class="h-1 w-3 bg-navy-800"></span>队列</div>
-            <div class="data-card-value !text-2xl">{{ snapshot.aiQueue.length }}</div>
-            <div class="data-card-foot">{{ round ? statusText[round.status] || round.status : '无运行任务' }}</div>
+            <div class="data-card-label"><span class="h-1 w-3 bg-navy-800"></span>运行中</div>
+            <div class="data-card-value !text-2xl">{{ runningCount }}</div>
+            <div class="data-card-foot">Agent 正在处理</div>
           </div>
           <div class="data-card">
-            <div class="data-card-label"><span class="h-1 w-3 bg-crimson-600"></span>opencode</div>
-            <div class="data-card-value !text-2xl" :class="probeStatusTone">{{ probeStatusLabel }}</div>
-            <div class="data-card-foot">{{ probeResult?.model || '等待自检' }}</div>
+            <div class="data-card-label"><span class="h-1 w-3 bg-ochre-600"></span>等待中</div>
+            <div class="data-card-value !text-2xl">{{ waitingCount }}</div>
+            <div class="data-card-foot">排队等待写锁/调度</div>
           </div>
           <div class="data-card">
-            <div class="data-card-label"><span class="h-1 w-3 bg-ochre-600"></span>场景线程</div>
-            <div class="data-card-value !text-2xl">{{ snapshot.sceneThreads.length }}</div>
-            <div class="data-card-foot">{{ snapshot.publicIntents.filter((entry) => entry.status === 'submitted').length }} 个已提交</div>
+            <div class="data-card-label"><span class="h-1 w-3 bg-crimson-600"></span>异常</div>
+            <div class="data-card-value !text-2xl">{{ unhealthyCount }}</div>
+            <div class="data-card-foot">错误或可能卡住</div>
+          </div>
+          <div class="data-card">
+            <div class="data-card-label"><span class="h-1 w-3 bg-forest-700"></span>最近完成</div>
+            <div class="data-card-value !text-2xl">{{ latestDone ? formatMs(latestDone.durationMs) : '-' }}</div>
+            <div class="data-card-foot">{{ latestDone?.title || '暂无完成任务' }}</div>
           </div>
         </div>
       </div>
@@ -117,34 +175,38 @@ function retryQueueItem(id: string) {
           <div class="font-mono text-[10px] font-bold tracking-[0.18em]">处理队列</div>
         </div>
         <div class="space-y-3 p-4">
-          <article v-for="item in snapshot.aiQueue" :key="item.id" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+          <article v-for="run in agentRuns" :key="run.id" class="rounded-sm border p-3" :class="runTone(run)">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div class="font-serif text-base font-bold text-paper-950">{{ item.id }}</div>
+                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
                 <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
-                  {{ item.kind }} · {{ statusText[item.status] || item.status }} · {{ new Date(item.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+                  {{ run.id }} · {{ run.agentName }} · {{ run.currentStep }}
                 </div>
               </div>
-              <button
-                v-if="item.id === 'submitted-intents' || (item.status === 'error' && item.kind === 'action')"
-                @click="retryQueueItem(item.id)"
-                :disabled="busy"
-                class="rounded-sm border border-ochre-300 bg-ochre-500 px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-950 disabled:opacity-40"
-              >
-                重跑
-              </button>
+              <div class="shrink-0 text-right font-mono text-[10px] leading-5 text-paper-800">
+                <div>{{ run.stale ? '可能卡住' : (statusText[run.status] || run.status) }}</div>
+                <div>{{ elapsedFor(run) }}</div>
+              </div>
             </div>
             <div class="mt-2 text-sm leading-6 text-paper-800">
-              席位：{{ item.participantSeats.join(', ') || '未记录' }}<br>
-              场景：{{ item.sceneIds.join(', ') || '未记录' }}
+              席位：{{ run.participantSeats.join(', ') || '未记录' }}<br>
+              角色：{{ run.participantCharacters.map((character) => `${character.name}@${character.sceneId}`).join('、') || '未记录' }}<br>
+              开始：{{ run.startedAt ? new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false }) : '未开始' }} ·
+              最后事件：{{ run.lastEventAt ? new Date(run.lastEventAt).toLocaleTimeString('zh-CN', { hour12: false }) : '暂无' }}
             </div>
             <div class="mt-3 flex flex-wrap gap-2">
-              <button v-if="item.packetPath" @click="emit('openFile', item.packetPath)" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">回合包</button>
-              <button v-if="item.resultPath" @click="emit('openFile', item.resultPath)" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">结果</button>
+              <button v-if="artifactPath(run, 'packet')" @click="emit('openFile', artifactPath(run, 'packet'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'packet') }}</button>
+              <button v-if="artifactPath(run, 'prompt')" @click="emit('openFile', artifactPath(run, 'prompt'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'prompt') }}</button>
+              <button v-if="artifactPath(run, 'rawResult')" @click="emit('openFile', artifactPath(run, 'rawResult'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'rawResult') }}</button>
+              <button v-if="artifactPath(run, 'parsedResult')" @click="emit('openFile', artifactPath(run, 'parsedResult'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'parsedResult') }}</button>
+              <button v-if="artifactPath(run, 'stdout')" @click="emit('openFile', artifactPath(run, 'stdout'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'stdout') }}</button>
+              <button v-if="artifactPath(run, 'stderr')" @click="emit('openFile', artifactPath(run, 'stderr'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'stderr') }}</button>
+              <button v-if="artifactPath(run, 'events')" @click="emit('openFile', artifactPath(run, 'events'))" class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">{{ artifactLabel(run, 'events') }}</button>
             </div>
-            <div v-if="item.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 p-2 text-sm text-crimson-700">{{ item.error }}</div>
+            <div v-if="run.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 p-2 text-sm text-crimson-700">{{ run.error }}</div>
+            <div v-if="run.warnings.length" class="mt-2 rounded-sm border border-ochre-200 bg-ochre-50 p-2 text-sm text-ochre-800">{{ run.warnings.join(' / ') }}</div>
           </article>
-          <div v-if="!snapshot.aiQueue.length" class="text-sm leading-7 text-paper-800">当前没有 AI DM 任务。</div>
+          <div v-if="!agentRuns.length" class="text-sm leading-7 text-paper-800">当前没有 Agent 任务。</div>
         </div>
       </div>
 
@@ -178,30 +240,36 @@ function retryQueueItem(id: string) {
         </div>
         <div class="space-y-4 p-4">
           <div class="flex flex-wrap gap-2">
-            <button @click="opsView = 'queue'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'queue' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">队列</button>
+            <button @click="opsView = 'agents'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'agents' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">Agent</button>
             <button @click="opsView = 'probe'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'probe' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">自检</button>
             <button @click="opsView = 'program'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'program' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">程序日志</button>
-            <button @click="opsView = 'round'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'round' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">回合事件</button>
+            <button @click="opsView = 'timeline'" class="rounded-sm border px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em]" :class="opsView === 'timeline' ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800'">时间线</button>
           </div>
 
-          <div v-if="opsView === 'queue'" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
-            <div v-if="snapshot.aiQueue.length" class="space-y-2">
-              <div v-for="item in snapshot.aiQueue" :key="`detail-${item.id}`" class="rounded-sm bg-white p-3 text-sm leading-6 text-paper-800">
-                <div class="font-serif text-base font-bold text-paper-950">{{ item.id }}</div>
+          <div v-if="opsView === 'agents'" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+            <div v-if="agentRuns.length" class="space-y-2">
+              <div v-for="run in agentRuns" :key="`detail-${run.id}`" class="rounded-sm border bg-white p-3 text-sm leading-6 text-paper-800" :class="runTone(run)">
+                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
                 <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
-                  {{ item.kind }} · {{ statusText[item.status] || item.status }} · {{ new Date(item.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+                  {{ run.id }} · {{ run.agentName }} · {{ run.phase }} · {{ run.currentStep }}
                 </div>
-                <div class="mt-2">席位：{{ item.participantSeats.join(', ') || '未记录' }}</div>
-                <div>场景：{{ item.sceneIds.join(', ') || '未记录' }}</div>
+                <div class="mt-2">状态：{{ run.stale ? '可能卡住' : (statusText[run.status] || run.status) }} · 耗时：{{ elapsedFor(run) }}</div>
+                <div>席位：{{ run.participantSeats.join(', ') || '未记录' }}</div>
+                <div>角色：{{ run.participantCharacters.map((character) => character.name).join('、') || '未记录' }}</div>
+                <div>最后事件：{{ run.lastEventAt ? new Date(run.lastEventAt).toLocaleString('zh-CN', { hour12: false }) : '暂无' }}</div>
                 <div class="mt-2 flex flex-wrap gap-2">
-                  <button v-if="item.packetPath" @click="emit('openFile', item.packetPath)" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">回合包</button>
-                  <button v-if="item.resultPath" @click="emit('openFile', item.resultPath)" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">结果</button>
+                  <button v-if="artifactPath(run, 'manifest')" @click="emit('openFile', artifactPath(run, 'manifest'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">manifest</button>
+                  <button v-if="artifactPath(run, 'packet')" @click="emit('openFile', artifactPath(run, 'packet'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">packet</button>
+                  <button v-if="artifactPath(run, 'prompt')" @click="emit('openFile', artifactPath(run, 'prompt'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">prompt</button>
+                  <button v-if="artifactPath(run, 'rawResult')" @click="emit('openFile', artifactPath(run, 'rawResult'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">raw</button>
+                  <button v-if="artifactPath(run, 'parsedResult')" @click="emit('openFile', artifactPath(run, 'parsedResult'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">parsed</button>
+                  <button v-if="artifactPath(run, 'events')" @click="emit('openFile', artifactPath(run, 'events'))" class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">events</button>
                 </div>
-                <div v-if="item.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 p-2 text-crimson-700">{{ item.error }}</div>
+                <div v-if="run.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 p-2 text-crimson-700">{{ run.error }}</div>
               </div>
             </div>
             <div v-else class="text-sm leading-7 text-paper-800">
-              当前没有 AI DM 任务。玩家提交行动后会自动进入等待队列；第一版执行仍是串行，数据模型已保留并发场景线程。
+              当前没有 Agent 任务。
             </div>
           </div>
 
@@ -230,14 +298,24 @@ function retryQueueItem(id: string) {
           </div>
 
           <div v-else class="rounded-sm border border-paper-300 bg-paper-100 p-3">
-            <div v-if="round?.logs?.length" class="max-h-[22rem] overflow-auto">
-              <div v-for="(entry, index) in round.logs" :key="index" class="flex gap-2 font-mono text-[11px] leading-6 text-paper-800">
-                <span class="shrink-0 text-paper-700">{{ new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
-                <span class="shrink-0 font-bold" :class="entry.stream === 'stderr' ? 'text-ochre-700' : entry.stream === 'stdout' ? 'text-forest-700' : 'text-crimson-700'">{{ entry.stream }}</span>
-                <span class="min-w-0 whitespace-pre-wrap break-words">{{ entry.text }}</span>
+            <div v-if="agentRuns.length" class="max-h-[22rem] space-y-2 overflow-auto">
+              <div v-for="run in agentRuns" :key="`timeline-${run.id}`" class="rounded-sm bg-white p-2 text-sm leading-6 text-paper-800">
+                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
+                <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
+                  {{ run.status }} · {{ run.currentStep }} · {{ elapsedFor(run) }}
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <span class="stamp text-paper-800">created {{ new Date(run.createdAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                  <span v-if="run.startedAt" class="stamp text-paper-800">started {{ new Date(run.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                  <span v-if="run.lastEventAt" class="stamp text-paper-800">last {{ new Date(run.lastEventAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                  <span v-if="run.endedAt" class="stamp text-paper-800">ended {{ new Date(run.endedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                </div>
+                <button v-if="artifactPath(run, 'events')" @click="emit('openFile', artifactPath(run, 'events'))" class="mt-2 rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                  打开 events.ndjson
+                </button>
               </div>
             </div>
-            <div v-else class="text-sm text-paper-800">当前还没有回合事件。</div>
+            <div v-else class="text-sm text-paper-800">当前还没有 Agent 时间线。</div>
           </div>
         </div>
       </div>

@@ -1,0 +1,4 @@
+{"ts":"2026-05-03T14:09:52.196Z","type":"start","status":"running","phase":"agent-running"}
+{"ts":"2026-05-03T14:19:52.244Z","type":"timeout","timeoutMs":600000}
+{"ts":"2026-05-03T14:19:52.254Z","type":"end","code":null,"status":"error","repaired":false}
+{"ts":"2026-05-03T19:12:42.564Z","type":"reconcile","status":"done","reason":"raw-result-present"}

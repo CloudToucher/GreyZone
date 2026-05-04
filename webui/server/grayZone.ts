@@ -12,6 +12,9 @@ export interface CharacterSummary {
   sceneId: string
   partyId: string
   visibilityScope: 'private' | 'scene' | 'public'
+  lifecycle: 'pending_contract' | 'active'
+  contractStatus: string
+  inGame: boolean
   inventory: string[]
   safeBox: Array<{ label: string; item: string; empty: boolean }>
   semanticStatus: string[]
@@ -232,6 +235,10 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
     const partyId = frontmatterString(frontmatter, ['partyId', 'party_id', '队伍'])
       || `party:${slug(location) || slug(controller || relPath) || 'default'}`
     const visibility = frontmatterString(frontmatter, ['visibilityScope', 'visibility_scope', '可见范围'])
+    const contractStatus = frontmatterString(frontmatter, ['contractStatus', 'contract_status', '合同状态'])
+      || 'pending'
+    const lifecycleRaw = frontmatterString(frontmatter, ['lifecycle', 'gameLifecycle', 'game_lifecycle'])
+    const inGame = frontmatter?.inGame === true || frontmatter?.in_game === true || /^(signed|active|joined|已签约|入局)$/i.test(contractStatus)
 
     return {
       path: relPath,
@@ -248,6 +255,9 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
         : visibility === 'scene' || visibility === '同场景'
           ? 'scene'
           : 'private',
+      lifecycle: inGame || lifecycleRaw === 'active' ? 'active' : 'pending_contract',
+      contractStatus,
+      inGame,
       inventory: extractInventory(body),
       safeBox: extractSafeBox(body),
       semanticStatus: extractSemanticStatus(body, currentSituation),

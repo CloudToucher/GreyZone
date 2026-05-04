@@ -7,30 +7,36 @@ import {
   buildSnapshot,
   buildTree,
   checkSceneReadiness,
-  createAiRoundPacket,
-  canWritePath,
-  createRoundPacket,
-  DM_HOSTED_MARKER,
   enableDmConsole,
   ensureTableState,
-  finalizeSeatsAfterRound,
   joinSeat,
   loadIntentForSeat,
-  markRoomIdle,
   readVisibleFile,
-  reconcileTableFromCharacters,
   releaseSeat,
   respondToTransfer,
   saveIntentForSeat,
   updateSeatStatus,
   loadSeatsFile,
   type IntentSections,
-  type SceneReadinessResult,
   type ViewerSession,
   writeVisibleFile,
 } from './core'
-import { runActionRound, runAssistantQuery, runForgeRound, runOpencodeProbe, runWelcomeRound, startDmSession, writeDmTrigger, getDmSessionState, pollDmResult, startDmHeartbeat, stopDmHeartbeat, stopDmSession } from './opencode'
-import { attachEventsStream, beginRound, emitSnapshotRefresh, finishRound, getVisibleRound, appendRoundLog } from './runtime'
+import { runOpencodeProbe } from './opencode'
+import { attachEventsStream, emitSnapshotRefresh } from './runtime'
+import {
+  buildJobArchives,
+  buildJobQueueItems,
+  buildAgentRunSummaries,
+  enqueueActionJob,
+  enqueueAssistantJob,
+  enqueueEnterJobs,
+  enqueueForgeJob,
+  getJob,
+  latestVisibleJobResults,
+  listJobs,
+  readJobArtifact,
+  type CharacterAction,
+} from './jobs'
 
 async function readJsonBody(req: IncomingMessage, max = 4 * 1024 * 1024): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -109,6 +115,21 @@ function validateRoomCode(root: string, seatName: string, roomCode: unknown) {
   return typeof roomCode === 'string' && roomCode.trim() === expected
 }
 
+async function snapshotWithJobs(root: string, viewer: ViewerSession) {
+  const snapshot = await buildSnapshot(root, viewer, null)
+  const latestResults = await latestVisibleJobResults(root, viewer)
+  const latestNarrative = latestResults.find((result) => result.kind !== 'assistant')
+  const agentRuns = await buildAgentRunSummaries(root, viewer)
+  snapshot.latestResults = latestResults as any
+  snapshot.latestResultContent = latestNarrative?.content || null
+  ;(snapshot as any).agentRuns = agentRuns
+  ;(snapshot as any).activeAgentRuns = agentRuns.filter((run) => run.status === 'waiting' || run.status === 'running' || run.status === 'validating' || run.status === 'stale')
+  snapshot.aiQueue = await buildJobQueueItems(root) as any
+  snapshot.archives = await buildJobArchives(root)
+  snapshot.visibleRound = null
+  return snapshot
+}
+
 export function filesMiddleware(workspaceRoot: string) {
   const root = path.resolve(workspaceRoot)
   return async function handle(req: IncomingMessage, res: ServerResponse, next: (err?: any) => void) {
@@ -171,64 +192,15 @@ export function filesMiddleware(workspaceRoot: string) {
       if (req.method === 'POST' && route === '/game/enter') {
         const viewer = await requireViewer(root, req, res)
         if (!viewer) return
-        const roundId = cryptoRandomId()
-        const result = await startDmSession({
-          workspaceRoot: root,
-          welcomeRoundId: roundId,
-        })
-        if (result.alreadyRunning) {
-          return sendJson(res, 200, { roundId: null, message: 'DM session already running' })
-        }
-        if ('error' in result && result.error) {
-          return sendJson(res, 500, { error: result.error })
-        }
-        const welcomePath = result.welcomeResultPath!
-        
-        // Start heartbeat monitoring
-        startDmHeartbeat(root, async () => {
-          appendRoundLog('meta', 'DM Session heartbeat lost — restarting session')
-          await stopDmSession()
-          stopDmHeartbeat()
-          // Restart DM session
-          const newRoundId = cryptoRandomId()
-          void startDmSession({
-            workspaceRoot: root,
-            welcomeRoundId: newRoundId,
-          })
-        })
-        
-        // Start polling for welcome result marker
-        pollDmResult(root, welcomePath, {
-          onDone: async (content, marker) => {
-            appendRoundLog('meta', 'DM Session welcome scene completed')
-            beginRound({
-              id: roundId,
-              kind: 'forge',
-              status: 'running',
-              startedAt: new Date().toISOString(),
-              participantSeats: [viewer.seatName],
-              packetPath: `table/rounds/${roundId}/packet.md`,
-              resultPath: welcomePath,
-              affectedFiles: [`table/rounds/${roundId}/result.md`],
-            })
-            finishRound({
-              status: 'done',
-              endedAt: new Date().toISOString(),
-              exitCode: 0,
-              resultPath: welcomePath,
-              resultContent: content,
-              resultMarker: marker,
-              affectedFiles: [`table/rounds/${roundId}/result.md`],
-            })
-            emitSnapshotRefresh('dm-session-welcome-ready')
-          },
-          onTimeout: async () => {
-            appendRoundLog('meta', 'DM Session welcome scene TIMEOUT')
-            emitSnapshotRefresh('dm-session-welcome-timeout')
-          },
-        })
-        emitSnapshotRefresh('enter-grey-zone')
-        return sendJson(res, 200, { roundId })
+        const body = await readJsonBody(req)
+        const characterPaths = Array.isArray(body?.characterPaths)
+          ? body.characterPaths.filter((entry: unknown): entry is string => typeof entry === 'string').map((entry: string) => entry.trim()).filter(Boolean)
+          : [typeof body?.characterPath === 'string' ? body.characterPath.trim() : ''].filter(Boolean)
+        if (!characterPaths.length) return sendJson(res, 400, { error: 'characterPath is required' })
+        const jobs = await enqueueEnterJobs(root, viewer, characterPaths)
+        emitSnapshotRefresh('job-enter-created')
+        const firstJob = jobs[0]
+        return sendJson(res, 200, { roundId: firstJob.id, jobId: firstJob.id, jobIds: jobs.map((job) => job.id), job: firstJob, jobs })
       }
 
       if (req.method === 'GET' && route === '/scene/readiness') {
@@ -247,22 +219,90 @@ export function filesMiddleware(workspaceRoot: string) {
           return sendJson(res, 400, { error: 'question is required' })
         }
         const charSummary = typeof body?.charSummary === 'string' ? body.charSummary : undefined
-        const roundId = cryptoRandomId()
-        void runAssistantQuery({
-          workspaceRoot: root,
-          viewer,
-          roundId,
-          question,
-          charSummary,
-        })
-        emitSnapshotRefresh('assistant-started')
-        return sendJson(res, 200, { roundId })
+        const job = await enqueueAssistantJob(root, viewer, question, charSummary)
+        emitSnapshotRefresh('job-assistant-created')
+        return sendJson(res, 200, { roundId: job.id, job })
+      }
+
+      if (req.method === 'POST' && route === '/jobs/enter') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const characterPaths = Array.isArray(body?.characterPaths)
+          ? body.characterPaths.filter((entry: unknown): entry is string => typeof entry === 'string').map((entry: string) => entry.trim()).filter(Boolean)
+          : [typeof body?.characterPath === 'string' ? body.characterPath.trim() : ''].filter(Boolean)
+        if (!characterPaths.length) return sendJson(res, 400, { error: 'characterPath is required' })
+        const jobs = await enqueueEnterJobs(root, viewer, characterPaths)
+        emitSnapshotRefresh('job-enter-created')
+        const firstJob = jobs[0]
+        return sendJson(res, 200, { jobId: firstJob.id, jobIds: jobs.map((job) => job.id), job: firstJob, jobs })
+      }
+
+      if (req.method === 'POST' && route === '/jobs/assistant') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const question = typeof body?.question === 'string' ? body.question.trim() : ''
+        if (!question) return sendJson(res, 400, { error: 'question is required' })
+        const job = await enqueueAssistantJob(root, viewer, question, typeof body?.charSummary === 'string' ? body.charSummary : undefined)
+        emitSnapshotRefresh('job-assistant-created')
+        return sendJson(res, 200, { jobId: job.id, job })
+      }
+
+      if (req.method === 'POST' && route === '/jobs/forge') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const job = await enqueueForgeJob(root, viewer, body?.forge || {})
+        emitSnapshotRefresh('job-forge-created')
+        return sendJson(res, 200, { jobId: job.id, job })
+      }
+
+      if (req.method === 'POST' && route === '/jobs/action') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        const actions = Array.isArray(body?.actions) ? body.actions as CharacterAction[] : undefined
+        const job = await enqueueActionJob(root, viewer, actions)
+        emitSnapshotRefresh('job-action-created')
+        return sendJson(res, 200, { jobId: job.id, job })
+      }
+
+      if (req.method === 'GET' && route === '/jobs') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const jobs = await listJobs(root)
+        const visible = viewer.role === 'dm' || viewer.dmEnabled
+          ? jobs
+          : jobs.filter((job) => job.participantSeats.includes(viewer.seatName) || job.createdBy === viewer.seatName)
+        return sendJson(res, 200, { jobs: visible })
+      }
+
+      const jobArtifactMatch = route.match(/^\/jobs\/([^/]+)\/artifacts\/([^/]+)$/)
+      if (req.method === 'GET' && jobArtifactMatch) {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const artifact = await readJobArtifact(root, viewer, jobArtifactMatch[1], jobArtifactMatch[2])
+        if (!artifact) return sendJson(res, 404, { error: 'job artifact not found or forbidden' })
+        return sendJson(res, 200, artifact)
+      }
+
+      const jobMatch = route.match(/^\/jobs\/([^/]+)$/)
+      if (req.method === 'GET' && jobMatch) {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const job = await getJob(root, jobMatch[1])
+        if (!job) return sendJson(res, 404, { error: 'job not found' })
+        if (!(viewer.role === 'dm' || viewer.dmEnabled) && !job.participantSeats.includes(viewer.seatName) && job.createdBy !== viewer.seatName) {
+          return sendJson(res, 403, { error: 'job forbidden' })
+        }
+        return sendJson(res, 200, { job })
       }
 
       if (req.method === 'GET' && route === '/session/snapshot') {
         const viewer = await requireViewer(root, req, res)
         if (!viewer) return
-        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled }))
+        const snapshot = await snapshotWithJobs(root, viewer)
         return sendJson(res, 200, snapshot)
       }
 
@@ -272,7 +312,7 @@ export function filesMiddleware(workspaceRoot: string) {
         const viewer = seatName && token ? await authenticateViewer(root, seatName, token) : null
         if (!viewer) return sendJson(res, 401, { error: 'invalid session' })
         attachEventsStream(res, { seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled })
-        const snapshot = await buildSnapshot(root, viewer, getVisibleRound({ seatName: viewer.seatName, role: viewer.role, dmEnabled: viewer.dmEnabled }))
+        const snapshot = await snapshotWithJobs(root, viewer)
         res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)
         return
       }
@@ -326,77 +366,14 @@ export function filesMiddleware(workspaceRoot: string) {
             })
           }
           
-          // All scene players ready — fire the round
-          void (async () => {
-            try {
-              const packet = await createAiRoundPacket(root, { reason: `submitted:${viewer.seatName}` })
-              const dmState = getDmSessionState()
-              
-              if (dmState.status === 'running') {
-                await writeDmTrigger({
-                  workspaceRoot: root,
-                  roundId: packet.roundId,
-                  packetPath: packet.packetPath,
-                  resultPath: packet.resultPath,
-                  seatNames: packet.seatNames,
-                })
-                pollDmResult(root, packet.resultPath, {
-                  onDone: async (content, marker) => {
-                    appendRoundLog('meta', `DM session round ${packet.roundId} completed via trigger file`)
-                    beginRound({
-                      id: packet.roundId,
-                      kind: 'action',
-                      status: 'running',
-                      startedAt: new Date().toISOString(),
-                      participantSeats: packet.seatNames,
-                      packetPath: packet.packetPath,
-                      resultPath: packet.resultPath,
-                      affectedFiles: [packet.packetPath, packet.resultPath],
-                    })
-                    finishRound({
-                      status: 'done',
-                      endedAt: new Date().toISOString(),
-                      exitCode: 0,
-                      resultPath: packet.resultPath,
-                      resultContent: content,
-                      resultMarker: marker,
-                      affectedFiles: [packet.packetPath, packet.resultPath],
-                    })
-                    await reconcileTableFromCharacters(root)
-                    await finalizeSeatsAfterRound(root, packet.seatNames)
-                    await markRoomIdle(root)
-                    emitSnapshotRefresh('dm-session-round-done')
-                  },
-                  onTimeout: async () => {
-                    appendRoundLog('meta', `DM session round ${packet.roundId} TIMEOUT waiting for marker`)
-                    emitSnapshotRefresh('dm-session-round-timeout')
-                  },
-                })
-              } else {
-                const aiViewer = { seatName: 'AI DM', role: 'dm' as const, token: '', dmEnabled: true }
-                void runActionRound({
-                  workspaceRoot: root,
-                  viewer: aiViewer,
-                  roundId: packet.roundId,
-                  seatNames: packet.seatNames,
-                  packetPath: packet.packetPath,
-                  resultPath: packet.resultPath,
-                })
-              }
-              emitSnapshotRefresh('ai-round-started')
-            } catch (error: any) {
-              const message = String(error?.message || error)
-              if (!/already processing|尚未全部就绪/.test(message)) {
-                console.error('[gray-zone-ai-auto]', error)
-              }
-              emitSnapshotRefresh('ai-round-skipped')
-            }
-          })()
+          const job = await enqueueActionJob(root, viewer)
+          emitSnapshotRefresh('job-action-created')
           
           return sendJson(res, 200, {
             intent,
             readiness,
-            message: '全部就绪，已触发 AI DM 处理',
+            message: '全部就绪，已创建 AI DM job',
+            jobId: job.id,
           })
         }
         return sendJson(res, 200, intent)
@@ -428,13 +405,14 @@ export function filesMiddleware(workspaceRoot: string) {
       if (req.method === 'POST' && route === '/round/compose') {
         const viewer = await requireViewer(root, req, res)
         if (!viewer) return
-        const body = await readJsonBody(req)
-        const result = await createRoundPacket(root, viewer, {
-          seatNames: Array.isArray(body?.seatNames) ? body.seatNames.map((value: unknown) => String(value)) : undefined,
-          note: typeof body?.note === 'string' ? body.note : undefined,
+        const job = await enqueueActionJob(root, viewer)
+        emitSnapshotRefresh('job-action-created')
+        return sendJson(res, 200, {
+          roundId: job.id,
+          packetPath: job.artifacts.packet,
+          resultPath: job.artifacts.rawResult,
+          seatNames: job.participantSeats,
         })
-        emitSnapshotRefresh('round-composed')
-        return sendJson(res, 200, result)
       }
 
       if (req.method === 'POST' && route === '/round/run') {
@@ -444,44 +422,14 @@ export function filesMiddleware(workspaceRoot: string) {
         const kind = body?.kind === 'forge' ? 'forge' : 'action'
 
         if (kind === 'forge') {
-          const roundId = typeof body?.roundId === 'string' && body.roundId ? body.roundId : cryptoRandomId()
-          void runForgeRound({
-            workspaceRoot: root,
-            viewer,
-            roundId,
-            forge: body?.forge || {},
-          })
-          emitSnapshotRefresh('forge-started')
-          return sendJson(res, 200, { roundId })
+          const job = await enqueueForgeJob(root, viewer, body?.forge || {})
+          emitSnapshotRefresh('job-forge-created')
+          return sendJson(res, 200, { roundId: job.id, job })
         }
 
-        const roundId = String(body?.roundId || '')
-        const packetPath = `table/rounds/${roundId}/packet.md`
-        const resultPath = `table/rounds/${roundId}/result.md`
-        const packetExists = await fs.stat(path.resolve(root, packetPath)).catch(() => null)
-        if (!packetExists?.isFile()) {
-          return sendJson(res, 404, { error: 'round packet not found' })
-        }
-
-        const packetContent = await fs.readFile(path.resolve(root, packetPath), 'utf8')
-        if (/创建角色|forge/i.test(packetContent.slice(0, 500))) {
-          return sendJson(res, 409, { error: 'this is a character creation packet; it cannot be rerun as an action round' })
-        }
-        const seatsMatch = packetContent.match(/- seats:\s*(.+)/)
-        const seatNames = seatsMatch?.[1]
-          ? seatsMatch[1].split(',').map((value) => value.trim()).filter(Boolean)
-          : []
-
-        void runActionRound({
-          workspaceRoot: root,
-          viewer,
-          roundId,
-          seatNames,
-          packetPath,
-          resultPath,
-        })
-        emitSnapshotRefresh('round-started')
-        return sendJson(res, 200, { roundId })
+        const job = await enqueueActionJob(root, viewer)
+        emitSnapshotRefresh('job-action-created')
+        return sendJson(res, 200, { roundId: job.id, job })
       }
 
       if (req.method === 'GET' && route === '/tree') {

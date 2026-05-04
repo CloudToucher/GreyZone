@@ -20,8 +20,11 @@ import {
   probeOpencode,
   releaseSeatSession,
   respondToTransfer,
+  runActionJob,
+  runForgeJob,
   runRound,
   saveMyIntent,
+  type CharacterAction,
   type FilePayload,
   type OpencodeProbeResult,
   type RoomSnapshot,
@@ -57,6 +60,7 @@ const dmUpgradeBusy = ref(false)
 const dmUpgradeError = ref<string | null>(null)
 
 let closeEvents: (() => void) | null = null
+let recoveringSession = false
 
 const lastSeatName = computed(() => localStorage.getItem(LAST_NAME_KEY) || '')
 const lastRoomCode = computed(() => localStorage.getItem(LAST_CODE_KEY) || '')
@@ -124,14 +128,46 @@ function bindEvents() {
     },
     onRefresh: async () => {
       if (!session.value) return
-      snapshot.value = await fetchSnapshot(session.value)
-      tree.value = await fetchTreeSession(session.value)
-      currentRound.value = snapshot.value.visibleRound
+      try {
+        snapshot.value = await fetchSnapshot(session.value)
+        tree.value = await fetchTreeSession(session.value)
+        currentRound.value = snapshot.value.visibleRound
+      } catch (err: any) {
+        const msg = err?.message || String(err)
+        if (/invalid session/i.test(msg) && await recoverCurrentSession('snapshot-refresh invalid session')) return
+        error.value = msg
+        pushProgramLog('warn', '刷新房间快照失败，将等待下一次事件恢复', msg)
+      }
     },
     onRound: (round) => {
       currentRound.value = round
     },
   })
+}
+
+async function recoverCurrentSession(reason: string) {
+  if (!session.value || recoveringSession) return false
+  recoveringSession = true
+  const seatName = session.value.seatName
+  const roomCode = localStorage.getItem(LAST_CODE_KEY) || ''
+  try {
+    closeEvents?.()
+    closeEvents = null
+    const result = await joinRoom(seatName, session.value.token, roomCode)
+    session.value = result.session
+    persistSession(result.session)
+    await hydrate()
+    bindEvents()
+    pushProgramLog('ok', '席位会话已自动恢复', reason)
+    return true
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    error.value = msg
+    pushProgramLog('error', '自动恢复席位失败', msg)
+    return false
+  } finally {
+    recoveringSession = false
+  }
 }
 
 async function join(payload: { name: string; roomCode?: string }) {
@@ -192,6 +228,29 @@ async function saveIntent(sections: any, status?: 'idle' | 'ready' | 'submitted'
   }
 }
 
+async function submitCharacterActions(actions: CharacterAction[]) {
+  if (!session.value) return
+  busy.value = true
+  error.value = null
+  try {
+    let result
+    try {
+      result = await runActionJob(session.value, actions)
+    } catch (err: any) {
+      if (!/invalid session/i.test(err?.message || String(err)) || !(await recoverCurrentSession('submit action invalid session')) || !session.value) throw err
+      result = await runActionJob(session.value, actions)
+    }
+    pushProgramLog('ok', '已创建 AI DM 行动 job', result.jobId)
+    await refresh()
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    error.value = msg
+    pushProgramLog('error', '提交行动失败', msg)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function onRespondTransfer(characterPath: string, accept: boolean) {
   if (!session.value) return
   busy.value = true
@@ -206,10 +265,21 @@ async function onRespondTransfer(characterPath: string, accept: boolean) {
 async function onRunForge(payload: any) {
   if (!session.value) return
   busy.value = true
+  error.value = null
   try {
-    const result = await runRound(session.value, { kind: 'forge', forge: payload })
-    pushProgramLog('info', '已提交创角回合', result.roundId)
+    let result
+    try {
+      result = await runForgeJob(session.value, payload)
+    } catch (err: any) {
+      if (!/invalid session/i.test(err?.message || String(err)) || !(await recoverCurrentSession('forge invalid session')) || !session.value) throw err
+      result = await runForgeJob(session.value, payload)
+    }
+    pushProgramLog('info', '已提交独立创角 Agent', result.jobId)
     currentPacket.value = null
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    error.value = msg
+    pushProgramLog('error', '创建角色失败', msg)
   } finally {
     busy.value = false
   }
@@ -241,15 +311,18 @@ async function onRunAction(roundId: string) {
   }
 }
 
-async function onEnterGreyZone() {
+async function onEnterGreyZone(characterPath: string | string[]) {
   if (!session.value) return
+  const characterPaths = Array.isArray(characterPath) ? characterPath : [characterPath]
+  if (!characterPaths.length) return
   busy.value = true
   error.value = null
   try {
-    pushProgramLog('info', '进入灰区... 等待 AI DM 生成欢迎场景')
-    const result = await enterGreyZone(session.value)
-    if (result.roundId) {
-      pushProgramLog('ok', '已触发欢迎场景生成', result.roundId)
+    pushProgramLog('info', `已提交 ${characterPaths.length} 个角色进入灰区，等待 AI DM 处理合同开局`, characterPaths.join(', '))
+    const result = await enterGreyZone(session.value, characterPaths)
+    const jobCount = result.jobIds?.length || (result.jobId ? 1 : 0)
+    if (jobCount) {
+      pushProgramLog('ok', `已创建 ${jobCount} 个欢迎场景 job`, result.jobIds?.join(', ') || result.jobId)
     } else {
       pushProgramLog('info', 'DM 会话已在运行中，欢迎场景即将生成')
     }
@@ -363,7 +436,9 @@ onMounted(async () => {
     await hydrate()
     bindEvents()
   } catch {
-    await leaveRoom()
+    if (!(await recoverCurrentSession('startup stored session invalid'))) {
+      await leaveRoom()
+    }
   }
 })
 
@@ -466,6 +541,7 @@ onBeforeUnmount(() => {
             :round="currentRound"
             :preview-file="previewFile"
             @save-intent="saveIntent"
+            @submit-character-actions="submitCharacterActions"
             @respond-transfer="onRespondTransfer"
             @run-forge="onRunForge"
             @open-file="openFile"
@@ -497,7 +573,8 @@ onBeforeUnmount(() => {
         <PlayerDocumentReader
           v-else-if="activeTab === 'dm' && hasDmConsole && showDmDocument"
           :file="previewFile"
-          title="AI 监控文件浏览"`r`n          return-label="返回 AI 监控台"
+          title="AI 监控文件浏览"
+          return-label="返回 AI 监控台"
           @close="showDmDocument = false"
         />
 

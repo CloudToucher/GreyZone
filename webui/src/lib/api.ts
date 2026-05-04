@@ -27,6 +27,17 @@ export interface IntentSections {
   triggers: string
 }
 
+export interface CharacterAction {
+  characterPath: string
+  characterName: string
+  playerSeat: string | null
+  publicAction: string
+  privateToDm: string
+  longTerm: string
+  triggers: string
+  aiHosted: boolean
+}
+
 export interface IntentDocument {
   seatName: string
   updatedAt: string | null
@@ -45,6 +56,9 @@ export interface CharacterSummary {
   sceneId: string
   partyId: string
   visibilityScope: 'private' | 'scene' | 'public'
+  lifecycle: 'pending_contract' | 'active'
+  contractStatus: string
+  inGame: boolean
   inventory: string[]
   safeBox: Array<{ label: string; item: string; empty: boolean }>
   semanticStatus: string[]
@@ -110,7 +124,9 @@ export interface SceneThread {
 
 export interface LatestResultSummary {
   id: string
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
   path: string
+  rawPath: string
   updatedAt: string
   title: string
   excerpt: string
@@ -121,13 +137,56 @@ export interface LatestResultSummary {
 export interface AiQueueItem {
   id: string
   kind: 'action' | 'forge'
-  status: 'waiting' | 'composing' | 'running' | 'done' | 'error'
+  status: 'waiting' | 'composing' | 'running' | 'done' | 'error' | 'stale'
   participantSeats: string[]
   sceneIds: string[]
   packetPath?: string
   resultPath?: string | null
   updatedAt: string
   error?: string | null
+  title?: string
+  phase?: string
+  startedAt?: string | null
+  endedAt?: string | null
+  elapsedMs?: number | null
+  durationMs?: number | null
+  lastEventAt?: string | null
+  stale?: boolean
+  agentName?: string
+  currentStep?: string
+}
+
+export interface AgentArtifactStat {
+  name: string
+  path: string
+  exists: boolean
+  size: number
+  updatedAt: string | null
+}
+
+export interface AgentRunSummary {
+  id: string
+  agentName: string
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  title: string
+  status: 'waiting' | 'running' | 'validating' | 'done' | 'error' | 'stale'
+  rawStatus: 'waiting' | 'running' | 'validating' | 'done' | 'error'
+  phase: string
+  currentStep: string
+  createdAt: string
+  startedAt: string | null
+  endedAt: string | null
+  elapsedMs: number | null
+  durationMs: number | null
+  lastEventAt: string | null
+  stale: boolean
+  rawReady: boolean
+  participantSeats: string[]
+  participantCharacters: Array<{ name: string; path: string; controller: string | null; sceneId: string; partyId: string }>
+  artifacts: Record<string, string>
+  artifactStats: AgentArtifactStat[]
+  error: string | null
+  warnings: string[]
 }
 
 export interface RoomSnapshot {
@@ -165,6 +224,8 @@ export interface RoomSnapshot {
   latestResults: LatestResultSummary[]
   latestResultContent: string | null
   aiQueue: AiQueueItem[]
+  agentRuns: AgentRunSummary[]
+  activeAgentRuns: AgentRunSummary[]
   sharedBoard: FilePayload | null
   archives: Array<{
     id: string
@@ -280,8 +341,14 @@ export async function enableDmConsoleSession(session: SessionCredentials, roomCo
   return sendJson<{ session: SessionCredentials }>('/api/session/enable-dm', 'POST', { roomCode }, session)
 }
 
-export async function enterGreyZone(session: SessionCredentials) {
-  return sendJson<{ roundId: string }>('/api/game/enter', 'POST', {}, session)
+export async function enterGreyZone(session: SessionCredentials, characterPath: string | string[]) {
+  const characterPaths = Array.isArray(characterPath) ? characterPath : [characterPath]
+  return sendJson<{ roundId: string; jobId?: string; jobIds?: string[]; jobs?: unknown[] }>(
+    '/api/game/enter',
+    'POST',
+    characterPaths.length === 1 ? { characterPath: characterPaths[0] } : { characterPaths },
+    session,
+  )
 }
 
 export async function askAssistant(
@@ -290,6 +357,14 @@ export async function askAssistant(
   charSummary?: string,
 ) {
   return sendJson<{ roundId: string }>('/api/assistant/ask', 'POST', { question, charSummary }, session)
+}
+
+export async function runActionJob(session: SessionCredentials, actions: CharacterAction[]) {
+  return sendJson<{ jobId: string; job: unknown }>('/api/jobs/action', 'POST', { actions }, session)
+}
+
+export async function runForgeJob(session: SessionCredentials, forge: ForgePayload) {
+  return sendJson<{ jobId: string; job: unknown }>('/api/jobs/forge', 'POST', { forge }, session)
 }
 
 export interface SceneReadinessResult {

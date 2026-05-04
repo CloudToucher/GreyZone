@@ -5,6 +5,8 @@ import yaml from 'js-yaml'
 import { readCharacterSummary, type CharacterSummary } from './grayZone'
 import type { VisibleRoundState } from './runtime'
 
+export type { CharacterSummary } from './grayZone'
+
 export interface ViewerSession {
   seatName: string
   role: 'dm' | 'player'
@@ -17,6 +19,7 @@ export interface SeatRecord {
   role: 'dm' | 'player'
   occupied: boolean
   tokenHash: string | null
+  tokenHashes?: string[]
   status: 'idle' | 'ready' | 'submitted' | 'locked'
   online: boolean
   lastSeenAt: string | null
@@ -101,7 +104,9 @@ export interface SceneThread {
 
 export interface LatestResultSummary {
   id: string
+  kind?: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
   path: string
+  rawPath?: string
   updatedAt: string
   title: string
   excerpt: string
@@ -172,12 +177,12 @@ export interface VisibleFile {
   content: string
 }
 
-interface SeatsFile {
+export interface SeatsFile {
   version: number
   seats: SeatRecord[]
 }
 
-interface ControlFile {
+export interface ControlFile {
   version: number
   bindings: ControlBinding[]
 }
@@ -216,6 +221,18 @@ function absolute(root: string, rel: string) {
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex')
 }
+
+function seatTokenHashes(seat: SeatRecord) {
+  return Array.from(new Set([seat.tokenHash, ...(seat.tokenHashes || [])].filter(Boolean) as string[]))
+}
+
+function rememberSeatToken(seat: SeatRecord, hash: string) {
+  const hashes = [hash, ...seatTokenHashes(seat).filter((entry) => entry !== hash)].slice(0, 8)
+  seat.tokenHash = hashes[0] || null
+  seat.tokenHashes = hashes
+}
+
+let seatsSaveQueue: Promise<void> = Promise.resolve()
 
 async function exists(abs: string) {
   try {
@@ -262,7 +279,7 @@ async function listCharacterFiles(root: string) {
     .map((entry) => relPath('characters/active', entry.name))
 }
 
-async function readAllCharacterSummaries(root: string) {
+export async function readAllCharacterSummaries(root: string) {
   const charPaths = await listCharacterFiles(root)
   return (
     await Promise.all(charPaths.map(async (rel) => readCharacterSummary(absolute(root, rel), rel)))
@@ -376,28 +393,103 @@ export function renderIntentMarkdown(seatName: string, sections: IntentSections,
   ].join('\n')
 }
 
-async function loadRoom(root: string) {
-  return readYamlFile<RoomState>(absolute(root, ROOM_FILE))
+export async function loadRoom(root: string) {
+  const abs = absolute(root, ROOM_FILE)
+  const data = await readYamlFile<RoomState | null>(abs).catch(() => null)
+  if (data && typeof data === 'object' && typeof data.ownerSeat === 'string') return data
+  const fallback: RoomState = {
+    version: 1,
+    title: 'Gray Zone Table',
+    ruleset: 'gray-zone',
+    ownerSeat: 'AI Monitor',
+    phase: 'idle',
+    currentRoundId: null,
+    sharedBoardPath: SHARED_BOARD_FILE,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }
+  await writeYamlFile(abs, fallback)
+  return fallback
 }
 
-async function saveRoom(root: string, room: RoomState) {
+export async function saveRoom(root: string, room: RoomState) {
   room.updatedAt = nowIso()
   await writeYamlFile(absolute(root, ROOM_FILE), room)
 }
 
 export async function loadSeatsFile(root: string) {
-  return readYamlFile<SeatsFile>(absolute(root, SEATS_FILE))
+  const abs = absolute(root, SEATS_FILE)
+  const data = await readYamlFile<SeatsFile | null>(abs).catch(() => null)
+  if (data && typeof data === 'object' && Array.isArray(data.seats)) return data
+  const fallback: SeatsFile = {
+    version: 1,
+    seats: [{
+      name: 'AI Monitor',
+      role: 'dm',
+      occupied: false,
+      tokenHash: null,
+      status: 'idle',
+      online: false,
+      lastSeenAt: null,
+      dmEnabled: true,
+    }],
+  }
+  await writeYamlFile(abs, fallback)
+  return fallback
 }
 
-async function loadSeats(root: string) {
+export async function loadSeats(root: string) {
   return loadSeatsFile(root)
 }
 
-async function saveSeats(root: string, seats: SeatsFile) {
-  await writeYamlFile(absolute(root, SEATS_FILE), seats)
+export async function saveSeats(root: string, seats: SeatsFile, options: { allowTokenClear?: boolean; preserveStatus?: boolean } = {}) {
+  const run = async () => {
+    const abs = absolute(root, SEATS_FILE)
+    const current = await readYamlFile<SeatsFile | null>(abs).catch(() => null)
+    if (current?.seats?.length) {
+      const currentByName = new Map(current.seats.map((seat) => [seat.name, seat]))
+      seats.seats = seats.seats.map((seat) => {
+        const existing = currentByName.get(seat.name)
+        if (!options.allowTokenClear && existing) {
+          const hashes = Array.from(new Set([
+            seat.tokenHash,
+            ...(seat.tokenHashes || []),
+            existing.tokenHash,
+            ...(existing.tokenHashes || []),
+          ].filter(Boolean) as string[])).slice(0, 8)
+          if (hashes.length || existing.tokenHash) {
+            const merged = {
+              ...seat,
+              tokenHash: hashes[0] || existing.tokenHash,
+              tokenHashes: hashes,
+            }
+            if (existing.tokenHash && !seat.tokenHash) {
+              merged.occupied = existing.occupied
+              merged.online = existing.online
+              merged.lastSeenAt = existing.lastSeenAt
+              merged.dmEnabled = existing.dmEnabled
+            }
+            return options.preserveStatus ? { ...merged, status: existing.status } : merged
+          }
+        }
+        return options.preserveStatus && existing ? { ...seat, status: existing.status } : seat
+      })
+      const nextNames = new Set(seats.seats.map((seat) => seat.name))
+      for (const seat of current.seats) {
+        if (!nextNames.has(seat.name) && (seat.occupied || seat.tokenHash)) {
+          seats.seats.push(seat)
+          nextNames.add(seat.name)
+        }
+      }
+    }
+    await writeYamlFile(abs, seats)
+  }
+  const next = seatsSaveQueue.then(run, run)
+  seatsSaveQueue = next.catch(() => {})
+  await next
 }
 
-async function loadControl(root: string) {
+export async function loadControl(root: string) {
   const abs = absolute(root, CONTROL_FILE)
   const data = await readYamlFile<ControlFile | null>(abs).catch(() => null)
   if (data && typeof data === 'object' && Array.isArray(data.bindings)) return data
@@ -406,7 +498,7 @@ async function loadControl(root: string) {
   return fallback
 }
 
-async function saveControl(root: string, control: ControlFile) {
+export async function saveControl(root: string, control: ControlFile) {
   await writeYamlFile(absolute(root, CONTROL_FILE), control)
 }
 
@@ -472,15 +564,24 @@ export async function reconcileTableFromCharacters(root: string) {
   const seatsFile = await loadSeats(root)
   const controlFile = await loadControl(root)
   const charSummaries = await readAllCharacterSummaries(root)
-  const seatNames = new Set(seatsFile.seats.map((seat) => seat.name))
+  const latestSeatsFile = await loadSeats(root).catch(() => seatsFile)
+  const latestSeatsByName = new Map(latestSeatsFile.seats.map((seat) => [seat.name, seat]))
+  const originalSeatsByName = new Map(seatsFile.seats.map((seat) => [seat.name, seat]))
+  const seatNames = new Set([...originalSeatsByName.keys(), ...latestSeatsByName.keys()])
 
   seatNames.add(room.ownerSeat)
   for (const summary of charSummaries) {
     if (summary.controller) seatNames.add(summary.controller)
   }
 
+  const preSaveSeatsFile = await loadSeats(root).catch(() => latestSeatsFile)
+  for (const seat of preSaveSeatsFile.seats) {
+    latestSeatsByName.set(seat.name, seat)
+    seatNames.add(seat.name)
+  }
+
   seatsFile.seats = [...seatNames].map((name) => {
-    const current = seatsFile.seats.find((seat) => seat.name === name)
+    const current = latestSeatsByName.get(name) || originalSeatsByName.get(name)
     return current || {
       name,
       role: name === room.ownerSeat ? 'dm' : 'player',
@@ -518,10 +619,10 @@ export async function authenticateViewer(root: string, seatName: string, token: 
   await ensureTableState(root)
   const seatsFile = await loadSeats(root)
   const seat = seatsFile.seats.find((entry) => entry.name === seatName)
-  if (!seat || !seat.tokenHash || seat.tokenHash !== tokenHash(token)) return null
+  if (!seat || !seatTokenHashes(seat).includes(tokenHash(token))) return null
   seat.online = true
   seat.lastSeenAt = nowIso()
-  await saveSeats(root, seatsFile)
+  await saveSeats(root, seatsFile, { preserveStatus: true })
   return { seatName: seat.name, role: seat.role, token, dmEnabled: Boolean(seat.dmEnabled) } satisfies ViewerSession
 }
 
@@ -541,6 +642,7 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
       role: seatName === room.ownerSeat ? 'dm' : 'player',
       occupied: true,
       tokenHash: nextHash,
+      tokenHashes: [nextHash],
       status: 'idle',
       online: true,
       lastSeenAt: nowIso(),
@@ -549,7 +651,7 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
     seatsFile.seats.push(seat)
   } else {
     seat.occupied = true
-    seat.tokenHash = nextHash
+    rememberSeatToken(seat, nextHash)
     seat.online = true
     seat.lastSeenAt = nowIso()
     if (typeof seat.dmEnabled !== 'boolean') seat.dmEnabled = seat.name === room.ownerSeat
@@ -581,10 +683,11 @@ export async function releaseSeat(root: string, viewer: ViewerSession, seatName:
   if (!seat) throw new Error('Seat not found')
   seat.occupied = false
   seat.tokenHash = null
+  seat.tokenHashes = []
   seat.online = false
   seat.status = 'idle'
   seat.lastSeenAt = nowIso()
-  await saveSeats(root, seatsFile)
+  await saveSeats(root, seatsFile, { allowTokenClear: true })
 }
 
 export async function updateSeatStatus(root: string, seatName: string, status: SeatRecord['status']) {
@@ -759,7 +862,7 @@ async function buildPublicIntents(root: string, seatsFile: SeatsFile, controlFil
     const controlled = controlFile.bindings
       .filter((binding) => binding.primarySeat === seat.name)
       .map((binding) => characters.find((character) => character.path === binding.characterPath))
-      .filter((entry): entry is CharacterSummary => !!entry)
+      .filter((entry): entry is CharacterSummary => !!entry && (entry.inGame || entry.lifecycle === 'active'))
     const primary = controlled[0]
     return {
       seatName: seat.name,
@@ -777,7 +880,7 @@ async function buildPublicIntents(root: string, seatsFile: SeatsFile, controlFil
 
 function buildSceneThreads(seatsFile: SeatsFile, controlFile: ControlFile, characters: CharacterSummary[]) {
   const map = new Map<string, SceneThread>()
-  for (const character of characters) {
+  for (const character of characters.filter((entry) => entry.inGame || entry.lifecycle === 'active')) {
     const binding = controlFile.bindings.find((entry) => entry.characterPath === character.path)
     const sceneId = character.sceneId || 'scene:default'
     const current = map.get(sceneId) || {
@@ -916,7 +1019,7 @@ export async function createRoundPacket(root: string, viewer: ViewerSession, arg
 export async function checkSceneReadiness(root: string, submittedSeatName: string): Promise<SceneReadinessResult> {
   const seatsFile = await loadSeats(root)
   const controlFile = await loadControl(root)
-  const characters = await readAllCharacterSummaries(root)
+  const characters = (await readAllCharacterSummaries(root)).filter((entry) => entry.inGame || entry.lifecycle === 'active')
 
   // Find the scene for the submitting seat
   const binding = controlFile.bindings.find((b) => b.primarySeat === submittedSeatName)
