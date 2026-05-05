@@ -227,6 +227,9 @@ function characterLine(character: CharacterSummary) {
     `### ${character.name}`,
     `- path: ${character.path}`,
     `- controller: ${character.controller || '(none)'}`,
+    `- contractStatus: ${character.contractStatus}`,
+    `- inGame: ${character.inGame ? 'true' : 'false'}`,
+    `- lifecycle: ${character.lifecycle}`,
     `- location: ${character.location}`,
     `- sceneId: ${character.sceneId}`,
     `- partyId: ${character.partyId}`,
@@ -265,8 +268,9 @@ function tagProtocol(resultPath: string) {
     '这里写 DM 内部钩子、暗骰、隐藏真相或审计说明。',
     ':::',
     '```',
-    '可以添加自定义 type 标签，但可见性标签必须至少包含 public、scene:*、self:*、party:*、dm-only、audit 之一。',
+    '可以添加自定义 type 标签，但可见性标签必须且只能使用 public、scene:*、self:*、party:*、dm-only、audit 之一；不要输出 :::gz update、:::gz state、:::gz character-state 这类 WebUI 不识别的可见性标签。',
     '不要把 DM-only 信息放进 public/scene/self/party 块。',
+    '行动回合中，## DM 回复、## 已确认变化、## 下一步方向 这三个玩家可见标题必须写在同一个 :::gz public type:dm-reply 块内部；不要把它们写在标签块外。',
   ].join('\n')
 }
 
@@ -322,6 +326,12 @@ function createActionPacket(args: {
 }) {
   const sceneIds = new Set(args.actions.map((action) => args.allCharacters.find((c) => c.path === action.characterPath)?.sceneId).filter(Boolean))
   const involved = args.allCharacters.filter((character) => sceneIds.has(character.sceneId) || args.actions.some((action) => action.characterPath === character.path))
+  const actionPaths = new Set(args.actions.map((action) => action.characterPath))
+  const passiveSameSeat = args.allCharacters.filter((character) =>
+    character.controller === args.viewer.seatName
+    && !actionPaths.has(character.path)
+    && sceneIds.has(character.sceneId),
+  )
   return [
     '# Agent Job Packet: action',
     '',
@@ -329,6 +339,11 @@ function createActionPacket(args: {
     '',
     `- triggered_by_player: ${args.viewer.seatName}`,
     `- result_raw_path: ${args.resultPath}`,
+    `- selected_action_count: ${args.actions.length}`,
+    `- selected_characters: ${args.actions.map((action) => action.characterName).join(', ') || '(none)'}`,
+    `- same_seat_not_selected: ${passiveSameSeat.map((character) => character.name).join(', ') || '(none)'}`,
+    '- identity_rule: 本轮角色行动卡中的 name + characterPath 是唯一身份来源。不要把这些角色别名为共享看板里的其他旧角色；共享看板或角色卡正文与 frontmatter 冲突时，以 frontmatter 和本轮行动卡为准。',
+    '- contract_rule: 如果角色 frontmatter 显示 contractStatus: signed / inGame: true / lifecycle: active，该角色已经签约入局。不要再要求他签约、预登记或领取开局合同。',
     '',
     '## 当前共享看板',
     args.sharedBoard || '(empty)',
@@ -357,9 +372,22 @@ function createActionPacket(args: {
     '## 同步场景内相关角色（按需读取完整角色卡）',
     ...involved.map(characterLine),
     '',
+    '## 玩家体验与结果结构要求',
+    '- 玩家必须先看到文学化结果，不要让 job、文件、技术日志成为主要内容。',
+    '- 本轮只把“本轮角色行动卡”中的角色当作主动行动者；same_seat_not_selected 中的角色保持待命、观察、跟随或自保，除非现场危险必须波及。',
+    '- 禁止把本轮角色写成“林澈（影子）”“周岚（胡明）”这类旧角色别名；除非角色卡明确写了该别名，否则只使用本轮行动卡中的角色名。',
+    '- 如果角色正文“当前处境”还写着等待签约、预登记、临时身份牌，但 frontmatter 已签约入局，必须把正文视为过期状态并在结果中自然修正。',
+    '- 若有两个或更多主动角色，必须写成同一段协同场景：明确谁掩护谁、谁发现线索、谁承担风险、谁消耗资源。不要输出两份互不相干的独立报告。',
+    '- 休整充分应降低风险或恢复资源；急着出发应更快但提高暴露、遗漏或资源消耗风险；硬冲、绕行、交涉、撤离应产生不同后果。',
+    '- 如果玩家行动明确写出“硬冲、开火、清除威胁、战斗测试、被堵就打、必须交火”等战斗意图，除非现场完全没有敌对目标，否则必须结算至少一个真实战斗节拍（攻击/闪避/压制/受伤/弹药或装备消耗之一），不要连续把所有战斗风险化解成对峙或无人开火。',
+    '- 结果必须包含以下玩家可读标题：## DM 回复、## 已确认变化、## 下一步方向。',
+    '- ## 已确认变化 必须列出本轮确认的伤势、弹药/装备、能量、位置、战利品、线索；没有变化也要写“暂无明确变化”。',
+    '- ## 下一步方向 必须给 2-3 个自然可执行选项，每项包含可直接复制到行动卡的一句话，例如“搜索房间”“掩护队友撤离”“绕路接近码头”。',
+    '',
     '## 必须遵守',
     '- 按 sceneId / partyId / 通信关系组织协同，不要把玩家身份直接当作角色行动主体。',
     '- 需要写回状态时，更新对应角色卡 frontmatter 和正文当前处境。',
+    '- 不允许在结果或 audit 中声称“已更新角色卡/看板”，除非你确实调用 Write/Edit 写入了对应文件；如果来不及维护完整角色卡，只写已确认变化，WebUI 会做最小兜底记录。',
     '- 只把公开确认事实写入 table/shared_board.md。',
     '- 私密意图、隐藏真相、暗骰和 DM 备注只能进入 dm-only/audit 标签块。',
     '',
@@ -520,6 +548,148 @@ export function visibleBlocksForViewer(parsed: ParsedResult | null, viewer: View
   })
 }
 
+function extractMarkdownSection(content: string, titles: string[]) {
+  for (const title of titles) {
+    const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = content.match(new RegExp(`(^|\\n)##\\s*${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`))
+    if (match?.[2]?.trim()) return match[2].trim()
+  }
+  return ''
+}
+
+function compactBoardLines(text: string, limit = 10) {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^#+\s/.test(line))
+    .slice(0, limit)
+    .join('\n')
+}
+
+function extractActionPublicSections(raw: string, parsed: ParsedResult) {
+  const publicContent = parsed.blocks
+    .filter((block) => block.visibility === 'public')
+    .map((block) => block.content)
+    .join('\n\n')
+  const changes = compactBoardLines(
+    extractMarkdownSection(publicContent, ['已确认变化', '状态变化'])
+    || extractMarkdownSection(raw, ['已确认变化', '状态变化'])
+    || publicContent,
+    14,
+  )
+  const next = compactBoardLines(
+    extractMarkdownSection(publicContent, ['下一步方向', '可以做些什么', '下一步'])
+    || extractMarkdownSection(raw, ['下一步方向', '可以做些什么', '下一步']),
+    5,
+  )
+  return { publicContent, changes, next }
+}
+
+async function appendActionResultToSharedBoard(root: string, manifest: AgentJobManifest, parsed: ParsedResult) {
+  if (manifest.kind !== 'action') return
+  const raw = await fs.readFile(abs(root, manifest.artifacts.rawResult), 'utf8').catch(() => '')
+  const { publicContent, changes, next } = extractActionPublicSections(raw, parsed)
+  const publicOrRaw = [publicContent, raw].filter(Boolean).join('\n\n')
+  if (!publicOrRaw.trim()) return
+  const entry = [
+    '',
+    `## AI 回合记录 ${manifest.endedAt || nowIso()} ${manifest.id}`,
+    '',
+    '### 已确认变化',
+    changes || '- 暂无明确变化。',
+    '',
+    '### 下一步方向',
+    next || '- 等待玩家选择下一步行动。',
+    '',
+  ].join('\n')
+  const boardPath = abs(root, 'table/shared_board.md')
+  const current = await fs.readFile(boardPath, 'utf8').catch(() => '# 共享看板\n')
+  if (current.includes(`AI 回合记录`) && current.includes(manifest.id)) return
+  await fs.writeFile(boardPath, `${current.trimEnd()}\n${entry}`, 'utf8')
+}
+
+function extractLocationFromChanges(changes: string) {
+  const line = changes.split(/\r?\n/).find((item) => /位置|地点|所在地/.test(item))
+  if (!line) return ''
+  const currentMatch = line.match(/(?:两人|队伍|小队|他们|她们|林澈和周岚|林澈与周岚)?(?:现已|现在|目前|当前|实际情况为)[^，。；;\n]*?(?:在|位于|处于)([^，。；;\n]+(?:（[^）]+）)?)/)
+  if (currentMatch?.[1]) {
+    return currentMatch[1]
+      .replace(/\*\*/g, '')
+      .replace(/^[:：\s]+/, '')
+      .trim()
+  }
+  const match = line.match(/(?:转移至|移动至|移动到|撤回至|撤至|返回|回到|抵达|到达)([^。；;\n]+?)(?:。|；|;|路径：|路线：|$)/)
+  if (!match?.[1]) return ''
+  return match[1]
+    .replace(/\*\*/g, '')
+    .replace(/[，,].*$/, '')
+    .trim()
+}
+
+function extractEnergyFromChanges(changes: string, characterName: string) {
+  const escaped = characterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = changes.match(new RegExp(`${escaped}\\s*(\\d+)\\s*(?:→|->|=>|到|至)\\s*(\\d+)`))
+  if (!match?.[2]) return null
+  const value = Number(match[2])
+  return Number.isFinite(value) ? value : null
+}
+
+async function appendActionResultToCharacterCards(root: string, manifest: AgentJobManifest, parsed: ParsedResult) {
+  if (manifest.kind !== 'action') return []
+  const raw = await fs.readFile(abs(root, manifest.artifacts.rawResult), 'utf8').catch(() => '')
+  const { changes, next } = extractActionPublicSections(raw, parsed)
+  if (!changes && !next) return []
+
+  const warnings: string[] = []
+  const location = extractLocationFromChanges(changes)
+  for (const character of manifest.participantCharacters) {
+    const characterPath = abs(root, character.path)
+    const card = await fs.readFile(characterPath, 'utf8').catch(() => null)
+    if (card == null) {
+      warnings.push(`未能写回角色卡兜底记录：${character.path} 不存在。`)
+      continue
+    }
+    if (card.includes(manifest.id)) continue
+
+    const { frontmatter, body } = splitMarkdownFrontmatter(card)
+    const nextFrontmatter = { ...frontmatter }
+    if (location) {
+      nextFrontmatter.location = location
+      nextFrontmatter.sceneId = location
+    }
+    const energyCurrent = extractEnergyFromChanges(changes, character.name)
+    if (energyCurrent != null && typeof nextFrontmatter.energy === 'object' && nextFrontmatter.energy) {
+      nextFrontmatter.energy = {
+        ...(nextFrontmatter.energy as Record<string, unknown>),
+        current: energyCurrent,
+      }
+    }
+    nextFrontmatter.lastActionJob = manifest.id
+
+    const entry = [
+      '',
+      `## AI 回合记录（WebUI 兜底） ${manifest.endedAt || nowIso()} ${manifest.id}`,
+      '',
+      '> 这是 WebUI 在行动 job 完成后写入的玩家可见摘要，用于防止角色卡状态落后于最新 DM 结果；复杂装备与线索仍以本轮“已确认变化”为准。',
+      '',
+      '### 已确认变化',
+      changes || '- 暂无明确变化。',
+      '',
+      '### 下一步方向',
+      next || '- 等待玩家选择下一步行动。',
+      '',
+    ].join('\n')
+
+    await fs.writeFile(
+      characterPath,
+      `---\n${yaml.dump(nextFrontmatter, { lineWidth: 120, noRefs: true, sortKeys: false })}---\n\n${body.trimEnd()}\n${entry}`,
+      'utf8',
+    )
+  }
+  return warnings
+}
+
 async function readSharedBoardText(root: string) {
   return fs.readFile(abs(root, 'table/shared_board.md'), 'utf8').catch(() => '')
 }
@@ -604,6 +774,8 @@ async function writePacketAndPrompt(root: string, manifest: AgentJobManifest, pa
     '## 文件输出硬要求',
     `你必须使用 Write 工具将完整结果写入 \`${resultPath}\`。`,
     '如果你需要修改角色卡、共享看板或 DM 备忘，请直接写对应文件；WebUI 不替你裁决或代写。',
+    '行动回合的玩家可见结果必须先给文学化叙事，再列出已确认变化，最后给 2-3 个可继续点击/复制的一句话行动钩子。',
+    '不要把 job id、packet、stdout、stderr 或内部审计内容放在玩家可见开头；技术信息只能进入 dm-only/audit 标签块。',
   ].join('\n')
   await fs.writeFile(abs(root, manifest.artifacts.packet), packet, 'utf8')
   await fs.writeFile(abs(root, manifest.artifacts.prompt), prompt, 'utf8')
@@ -952,6 +1124,11 @@ async function finishJobFromRaw(root: string, manifest: AgentJobManifest, code: 
   const parsed = parseTaggedResult(manifest.id, raw)
   manifest.parserWarnings = parsed.warnings
   await fs.writeFile(abs(root, manifest.artifacts.parsedResult), JSON.stringify(parsed, null, 2), 'utf8')
+  if (!error) {
+    await appendActionResultToSharedBoard(root, manifest, parsed)
+    const cardWarnings = await appendActionResultToCharacterCards(root, manifest, parsed)
+    if (cardWarnings.length) manifest.parserWarnings = [...manifest.parserWarnings, ...cardWarnings]
+  }
   manifest.status = error ? 'error' : 'done'
   manifest.error = error || null
   manifest.phase = 'post-processing'

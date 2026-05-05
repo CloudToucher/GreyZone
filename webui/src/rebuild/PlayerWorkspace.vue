@@ -60,6 +60,20 @@ const activeCharacters = computed(() => controlledCharacters.value.filter((chara
 const pendingCharacters = computed(() => controlledCharacters.value.filter((character) => !character.inGame && character.lifecycle !== 'active'))
 
 const characterActions = reactive<Record<string, CharacterAction>>({})
+const selectedActionPaths = ref<string[]>([])
+const advancedOpen = reactive<Record<string, boolean>>({})
+
+type PlayPhase = '休整' | '出发' | '探索' | '战斗' | '撤离'
+
+const PHASES: PlayPhase[] = ['休整', '出发', '探索', '战斗', '撤离']
+
+const phaseHints: Record<PlayPhase, string> = {
+  休整: '整理状态、治疗、补给、询问情报，准备下一次行动。',
+  出发: '选择目的地、路线和携带物，决定是稳妥准备还是快速推进。',
+  探索: '侦察、搜索、交涉、绕路或深入当前区域。',
+  战斗: '选择压制、突入、掩护、撤退或绕行，行动会直接影响伤势和资源。',
+  撤离: '带走战利品和伤员，确认路线，决定继续深入还是返回据点。',
+}
 
 watch(
   controlledCharacters,
@@ -84,6 +98,7 @@ watch(
         characterActions[character.path].characterName = character.name
         characterActions[character.path].playerSeat = props.session.seatName
       }
+      if (advancedOpen[character.path] == null) advancedOpen[character.path] = false
     }
   },
   { immediate: true },
@@ -99,10 +114,113 @@ const latestAssistantResult = computed(() =>
 const latestNarrativeResult = computed(() =>
   (props.snapshot.latestResults || []).find((result) => result.kind !== 'assistant') || null,
 )
+const latestPlayerResultContent = computed(() =>
+  props.round?.resultContent || props.snapshot.latestResultContent || latestNarrativeResult.value?.content || '',
+)
 const sceneIds = computed(() => new Set(activeCharacters.value.map((character) => character.sceneId)))
 const sceneIntents = computed(() =>
   props.snapshot.publicIntents.filter((entry) => sceneIds.value.size === 0 || sceneIds.value.has(entry.sceneId) || entry.seatName === props.session.seatName),
 )
+
+function normalizeText(text: string) {
+  return text.replace(/<!--[\s\S]*?-->/g, '').trim()
+}
+
+function sectionBody(content: string, titles: string[]) {
+  for (const title of titles) {
+    const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`(^|\\n)##\\s*${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`)
+    const match = content.match(re)
+    if (match?.[2]?.trim()) return normalizeText(match[2])
+  }
+  return ''
+}
+
+const narrativeBody = computed(() => {
+  const content = latestPlayerResultContent.value
+  return sectionBody(content, ['DM 回复', '场景推进', '当前局面'])
+    || normalizeText(content).split(/\n##\s+/)[0]?.trim()
+    || ''
+})
+
+const confirmedChanges = computed(() => {
+  const content = latestPlayerResultContent.value
+  const body = sectionBody(content, ['已确认变化', '状态变化', '裁定'])
+  if (body) return body
+  const fallbackLines = normalizeText(content)
+    .split(/\r?\n/)
+    .filter((line) => /受伤|血|弹|能量|位置|战利品|获得|消耗|失去|移动|安全箱|背包|灰币|线索/.test(line))
+    .slice(0, 8)
+  return fallbackLines.join('\n')
+})
+
+const nextActionOptions = computed(() => {
+  const body = sectionBody(latestPlayerResultContent.value, ['下一步方向', '可以做些什么', '下一步'])
+  const lines = body
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s*/, '').replace(/^\d+[.)]\s*/, '').trim())
+    .filter(Boolean)
+    .map((line) => {
+      const quoted = line.match(/`([^`]+)`/)?.[1]
+      const afterWrite = line.match(/(?:写|输入|行动)[：:]\s*([^。；;]+)/)?.[1]
+      const text = quoted || afterWrite || line.replace(/\*\*/g, '')
+      return text.trim().slice(0, 120)
+    })
+    .filter((line) => line.length >= 2 && !/^<!--/.test(line))
+  return Array.from(new Set(lines)).slice(0, 3)
+})
+
+function inferPhaseFromText(text: string): PlayPhase {
+  if (/撤离|撤退|撤出|返回据点|归队|战利品结算|脱离/.test(text)) return '撤离'
+  if (/战斗|交火|开火|伏击|敌人|压制|突入|硬冲|受伤|弹匣|掩护/.test(text)) return '战斗'
+  if (/探索|搜索|侦察|深入|房间|道路|废墟|工厂|码头|实验室|线索/.test(text)) return '探索'
+  if (/出发|前往|路线|任务地点|接任务|补给|整备|车辆|集合/.test(text)) return '出发'
+  return '休整'
+}
+
+const currentPhase = computed<PlayPhase>(() => {
+  if (!activeCharacters.value.length) return '休整'
+  const haystack = [
+    latestPlayerResultContent.value,
+    props.snapshot.sharedBoard?.content || '',
+    activeCharacters.value.map((character) => `${character.location} ${character.currentSituation}`).join('\n'),
+  ].join('\n')
+  return inferPhaseFromText(haystack)
+})
+
+const phaseTitle = computed(() => {
+  if (!controlledCharacters.value.length) return '先创建角色'
+  if (!activeCharacters.value.length) return '选择角色进入灰区'
+  if (seatStatus.value === 'locked') return `${currentPhase.value}处理中`
+  return `${currentPhase.value}阶段：选择角色行动`
+})
+
+function latestMentionedCharacterPaths(characters: CharacterSummary[]) {
+  const content = latestPlayerResultContent.value
+  return characters.filter((character) => content.includes(character.name)).map((character) => character.path)
+}
+
+watch(
+  activeCharacters,
+  (characters) => {
+    const activePaths = new Set(characters.map((character) => character.path))
+    selectedActionPaths.value = selectedActionPaths.value.filter((path) => activePaths.has(path))
+    if (!characters.length || selectedActionPaths.value.length) return
+    const mentioned = latestMentionedCharacterPaths(characters)
+    selectedActionPaths.value = mentioned.length ? [mentioned[0]] : [characters[0].path]
+  },
+  { immediate: true },
+)
+
+const selectedActionCharacters = computed(() =>
+  activeCharacters.value.filter((character) => selectedActionPaths.value.includes(character.path)),
+)
+
+const standbyCharacters = computed(() =>
+  activeCharacters.value.filter((character) => !selectedActionPaths.value.includes(character.path)),
+)
+
+const hasSelectedActions = computed(() => selectedActionCharacters.value.length > 0)
 
 // Scene readiness
 const readiness = ref<SceneReadinessResult | null>(null)
@@ -281,11 +399,12 @@ const playHint = computed(() => {
     return '已就绪。等待 AI DM 处理...'
   }
   if (intentModified.value) return '意图已修改，请重新点击"就绪"提交。'
-  return '在下面写好行动 → 点击"公开草稿"让同场景玩家看到 → 点击"就绪"提交给 AI DM'
+  return `当前是${currentPhase.value}。勾选本轮参与角色，给每个角色写一句核心意图；没勾选的人会待命。`
 })
 
 function draftFromCharacterActions() {
-  const actions = activeCharacters.value.map((character) => characterActions[character.path]).filter(Boolean)
+  const source = selectedActionCharacters.value.length ? selectedActionCharacters.value : activeCharacters.value
+  const actions = source.map((character) => characterActions[character.path]).filter(Boolean)
   if (!actions.length) return { ...intent }
   const format = (key: 'publicAction' | 'privateToDm' | 'longTerm' | 'triggers') => actions
     .map((action) => {
@@ -311,10 +430,21 @@ function save(status?: 'idle' | 'ready' | 'submitted') {
 }
 
 function submitActions() {
-  const actions = activeCharacters.value.map((character) => characterActions[character.path]).filter(Boolean)
+  const actions = selectedActionCharacters.value.map((character) => characterActions[character.path]).filter(Boolean)
   if (!actions.length) return
   intentModified.value = false
   emit('submitCharacterActions', actions.map((action) => ({ ...action })))
+}
+
+function applyQuickAction(text: string) {
+  const targets = selectedActionCharacters.value.length ? selectedActionCharacters.value : activeCharacters.value
+  for (const character of targets) {
+    const action = characterActions[character.path]
+    if (!action) continue
+    action.publicAction = action.publicAction?.trim()
+      ? `${action.publicAction.trim()}\n${text}`
+      : text
+  }
 }
 
 function enterCharacters(characterPaths: string[]) {
@@ -385,9 +515,24 @@ function bloodLabel(character: CharacterSummary) {
           <div>
             <div class="font-mono text-[10px] uppercase tracking-[0.18em] text-crimson-700">下一步</div>
             <div class="mt-1 font-serif text-2xl font-bold text-paper-950">
-              {{ activeCharacters.length ? '提交行动，等待 AI DM 调度' : controlledCharacters.length ? '选择角色进入灰区' : '先创建角色' }}
+              {{ phaseTitle }}
             </div>
             <div class="mt-2 max-w-3xl text-sm leading-7 text-paper-800">{{ playHint }}</div>
+            <div v-if="activeCharacters.length" class="mt-4 flex flex-wrap gap-2">
+              <span
+                v-for="phase in PHASES"
+                :key="phase"
+                class="rounded-sm border px-3 py-1.5 font-mono text-[10px] font-bold tracking-[0.12em]"
+                :class="phase === currentPhase ? 'border-crimson-700 bg-crimson-600 text-white' : 'border-paper-300 bg-white text-paper-700'"
+              >
+                {{ phase }}
+              </span>
+            </div>
+            <div v-if="activeCharacters.length" class="mt-2 text-xs leading-6 text-paper-700">
+              {{ phaseHints[currentPhase] }} 已选 {{ selectedActionCharacters.length }} 人；
+              <span v-if="standbyCharacters.length">待命：{{ standbyCharacters.map((character) => character.name).join('、') }}</span>
+              <span v-else>没有待命角色。</span>
+            </div>
           </div>
           <div class="flex flex-wrap gap-2">
             <button
@@ -396,43 +541,6 @@ function bloodLabel(character: CharacterSummary) {
             >
               {{ forgeOpen ? '收起创建角色' : '创建角色' }}
             </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="clash-card overflow-hidden">
-        <div class="clash-card-header px-4 py-3">
-          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">Agent 状态</div>
-          <div class="mt-1 text-sm text-white/80">这里显示与你当前席位或角色相关的 AI 任务。</div>
-        </div>
-        <div class="space-y-2 p-4">
-          <article
-            v-for="run in agentStatusRuns"
-            :key="run.id"
-            class="rounded-sm border p-3"
-            :class="agentTone(run.status, run.stale)"
-          >
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
-                <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
-                  {{ run.agentName }} · {{ agentKindLabel(run.kind) }} · {{ run.currentStep }}
-                </div>
-              </div>
-              <div class="shrink-0 text-right font-mono text-[10px] leading-5">
-                <div>{{ run.stale ? '可能卡住' : run.status }}</div>
-                <div>{{ elapsedFor(run) }}</div>
-              </div>
-            </div>
-            <div class="mt-2 text-xs leading-5 text-paper-700">
-              参与角色：{{ run.participantCharacters.map((character) => character.name).join('、') || '未绑定角色' }}
-              <span class="mx-1">·</span>
-              最后事件：{{ run.lastEventAt ? new Date(run.lastEventAt).toLocaleTimeString('zh-CN', { hour12: false }) : '暂无' }}
-            </div>
-            <div v-if="run.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 px-2 py-1 text-xs text-crimson-700">{{ run.error }}</div>
-          </article>
-          <div v-if="!agentStatusRuns.length" class="text-sm leading-7 text-paper-800">
-            当前没有与你相关的 Agent 任务。创建角色、进入灰区或提交角色行动后，这里会显示状态和耗时。
           </div>
         </div>
       </div>
@@ -475,6 +583,80 @@ function bloodLabel(character: CharacterSummary) {
           {{ latestNarrativeResult.excerpt || '打开结果文件查看完整回复。' }}
         </div>
       </div>
+
+      <div v-if="latestPlayerResultContent" class="clash-card overflow-hidden">
+        <div class="clash-card-header px-4 py-3">
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">结果速读</div>
+          <div class="mt-1 text-sm text-white/80">先看叙事，再看状态变化和下一步。</div>
+        </div>
+        <div class="grid gap-3 p-4 lg:grid-cols-3">
+          <div class="rounded-sm border border-paper-300 bg-paper-100 p-3 lg:col-span-2">
+            <div class="font-mono text-[10px] font-bold tracking-[0.16em] text-paper-600">文学化结果</div>
+            <div class="mt-2 max-h-72 overflow-auto text-sm leading-7 text-paper-850">
+              <RenderedMarkdown :content="narrativeBody || latestPlayerResultContent" compact />
+            </div>
+          </div>
+          <div class="space-y-3">
+            <div class="rounded-sm border border-paper-300 bg-white p-3">
+              <div class="font-mono text-[10px] font-bold tracking-[0.16em] text-paper-600">已确认变化</div>
+              <div v-if="confirmedChanges" class="mt-2 max-h-44 overflow-auto text-sm leading-6 text-paper-850">
+                <RenderedMarkdown :content="confirmedChanges" compact />
+              </div>
+              <div v-else class="mt-2 text-sm leading-6 text-paper-700">暂无明确状态变化。</div>
+            </div>
+            <div class="rounded-sm border border-paper-300 bg-white p-3">
+              <div class="font-mono text-[10px] font-bold tracking-[0.16em] text-paper-600">下一步可选行动</div>
+              <div v-if="nextActionOptions.length" class="mt-2 space-y-2">
+                <button
+                  v-for="option in nextActionOptions"
+                  :key="option"
+                  @click="applyQuickAction(option)"
+                  class="w-full rounded-sm border border-navy-700 bg-navy-50 px-3 py-2 text-left text-sm leading-6 text-navy-900 hover:bg-navy-100"
+                >
+                  {{ option }}
+                </button>
+              </div>
+              <div v-else class="mt-2 text-sm leading-6 text-paper-700">DM 尚未给出可提取的下一步钩子。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <details class="clash-card overflow-hidden">
+        <summary class="cursor-pointer px-4 py-3 font-mono text-[10px] font-bold tracking-[0.18em] text-paper-800">
+          后台处理状态（调试）
+        </summary>
+        <div class="space-y-2 border-t border-paper-300 p-4">
+          <article
+            v-for="run in agentStatusRuns"
+            :key="run.id"
+            class="rounded-sm border p-3"
+            :class="agentTone(run.status, run.stale)"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-serif text-base font-bold text-paper-950">{{ run.title }}</div>
+                <div class="mt-1 font-mono text-[10px] tracking-[0.14em] text-paper-700">
+                  {{ run.agentName }} · {{ agentKindLabel(run.kind) }} · {{ run.currentStep }}
+                </div>
+              </div>
+              <div class="shrink-0 text-right font-mono text-[10px] leading-5">
+                <div>{{ run.stale ? '可能卡住' : run.status }}</div>
+                <div>{{ elapsedFor(run) }}</div>
+              </div>
+            </div>
+            <div class="mt-2 text-xs leading-5 text-paper-700">
+              参与角色：{{ run.participantCharacters.map((character) => character.name).join('、') || '未绑定角色' }}
+              <span class="mx-1">·</span>
+              最后事件：{{ run.lastEventAt ? new Date(run.lastEventAt).toLocaleTimeString('zh-CN', { hour12: false }) : '暂无' }}
+            </div>
+            <div v-if="run.error" class="mt-2 rounded-sm border border-crimson-200 bg-crimson-50 px-2 py-1 text-xs text-crimson-700">{{ run.error }}</div>
+          </article>
+          <div v-if="!agentStatusRuns.length" class="text-sm leading-7 text-paper-800">
+            当前没有与你相关的 Agent 任务。
+          </div>
+        </div>
+      </details>
 
       <div class="hud-frame">
         <span class="corner-bl"></span><span class="corner-br"></span>
@@ -651,7 +833,12 @@ function bloodLabel(character: CharacterSummary) {
         </div>
         <div class="space-y-4 p-4">
           <div v-if="activeCharacters.length" class="space-y-3">
-            <article v-for="character in activeCharacters" :key="`action-${character.path}`" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+            <article
+              v-for="character in activeCharacters"
+              :key="`action-${character.path}`"
+              class="rounded-sm border p-3"
+              :class="selectedActionPaths.includes(character.path) ? 'border-navy-500 bg-navy-50' : 'border-paper-300 bg-paper-100 opacity-75'"
+            >
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div class="font-serif text-base font-bold text-paper-950">{{ character.name }}</div>
@@ -659,23 +846,44 @@ function bloodLabel(character: CharacterSummary) {
                     {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
                   </div>
                 </div>
-                <label class="inline-flex items-center gap-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
-                  <input v-model="characterActions[character.path].aiHosted" type="checkbox" class="accent-navy-800" />
-                  AI 托管
-                </label>
+                <div class="flex flex-wrap items-center gap-2">
+                  <label class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                    <input v-model="selectedActionPaths" :value="character.path" type="checkbox" class="accent-crimson-600" />
+                    {{ selectedActionPaths.includes(character.path) ? '本轮参与' : '本轮待命' }}
+                  </label>
+                  <label class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                    <input v-model="characterActions[character.path].aiHosted" type="checkbox" class="accent-navy-800" />
+                    AI 托管
+                  </label>
+                </div>
               </div>
               <div class="mt-3 grid gap-3">
                 <label class="space-y-1">
-                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">公开行动（同场景可见）</div>
-                  <textarea v-model="characterActions[character.path].publicAction" rows="4" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="这个角色现在做什么。例：影子拿起笔仔细阅读合同条款，然后询问安全箱赔付边界。" />
+                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">核心意图（一句话即可，同场景可见）</div>
+                  <textarea
+                    v-model="characterActions[character.path].publicAction"
+                    rows="3"
+                    class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6"
+                    :disabled="!selectedActionPaths.includes(character.path)"
+                    placeholder="例：侦察前方道路 / 掩护队友撤离 / 搜索房间。也可以写复杂行动。"
+                  />
                 </label>
-                <label class="space-y-1">
-                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
-                  <textarea v-model="characterActions[character.path].privateToDm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="只给 AI DM 的真实目的、试探、隐瞒或底线。" />
-                </label>
-                <div class="grid gap-3 md:grid-cols-2">
-                  <textarea v-model="characterActions[character.path].longTerm" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="长期目标，例如：找到妹妹的线索。" />
-                  <textarea v-model="characterActions[character.path].triggers" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" placeholder="触发条件，例如：如果职员回避安全箱问题就追问。" />
+                <button
+                  type="button"
+                  @click="advancedOpen[character.path] = !advancedOpen[character.path]"
+                  class="w-fit rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 hover:border-navy-700 hover:text-navy-800"
+                >
+                  {{ advancedOpen[character.path] ? '收起复杂输入' : '展开复杂输入' }}
+                </button>
+                <div v-if="advancedOpen[character.path]" class="grid gap-3">
+                  <label class="space-y-1">
+                    <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
+                    <textarea v-model="characterActions[character.path].privateToDm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="只给 AI DM 的真实目的、试探、隐瞒或底线。" />
+                  </label>
+                  <div class="grid gap-3 md:grid-cols-2">
+                    <textarea v-model="characterActions[character.path].longTerm" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="长期目标，例如：找到妹妹的线索。" />
+                    <textarea v-model="characterActions[character.path].triggers" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="触发条件，例如：如果职员回避安全箱问题就追问。" />
+                  </div>
                 </div>
               </div>
             </article>
@@ -689,7 +897,9 @@ function bloodLabel(character: CharacterSummary) {
           <div class="flex flex-wrap items-center gap-2">
             <button @click="save()" :disabled="busy" class="rounded-sm border border-paper-300 bg-white px-3 py-1.5 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 disabled:opacity-40">保存草稿</button>
             <button @click="save('ready')" :disabled="busy" class="rounded-sm border border-forest-600 bg-forest-600 px-3 py-1.5 font-mono text-[10px] font-bold tracking-[0.12em] text-white disabled:opacity-40">公开草稿</button>
-            <button @click="submitActions" :disabled="busy || !activeCharacters.length" class="rounded-sm border border-navy-800 bg-navy-800 px-4 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-white disabled:opacity-40">提交已入局角色行动给 AI DM</button>
+            <button @click="submitActions" :disabled="busy || !hasSelectedActions" class="rounded-sm border border-navy-800 bg-navy-800 px-4 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-white disabled:opacity-40">
+              提交选中角色行动（{{ selectedActionCharacters.length }}）
+            </button>
             <span class="font-mono text-[10px] tracking-[0.18em]" :class="statusColor[seatStatus] || 'text-paper-800'">
               {{ statusText[seatStatus] || seatStatus }}
             </span>

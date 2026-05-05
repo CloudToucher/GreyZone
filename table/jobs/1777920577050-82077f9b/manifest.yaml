@@ -1,0 +1,37 @@
+id: 1777920577050-82077f9b
+kind: contract_onboarding
+title: 2 人批量进入灰区 / 合同开局 | 习风 | 2026/5/5 02:49:37
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-04T18:49:37.050Z'
+updatedAt: '2026-05-04T18:54:17.373Z'
+startedAt: '2026-05-04T18:49:37.074Z'
+endedAt: '2026-05-04T18:54:17.373Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters:
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: 围栏镇基地_登记大厅
+    partyId: 林澈
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: 围栏镇基地_登记大厅
+    partyId: 周岚
+artifacts:
+  manifest: table/jobs/1777920577050-82077f9b/manifest.yaml
+  packet: table/jobs/1777920577050-82077f9b/packet.md
+  prompt: table/jobs/1777920577050-82077f9b/prompt.md
+  rawResult: table/jobs/1777920577050-82077f9b/result.raw.md
+  parsedResult: table/jobs/1777920577050-82077f9b/result.parsed.json
+  stdout: table/jobs/1777920577050-82077f9b/stdout.log
+  stderr: table/jobs/1777920577050-82077f9b/stderr.log
+  events: table/jobs/1777920577050-82077f9b/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

@@ -10,9 +10,18 @@ seats:
     dmEnabled: true
   - name: 习风
     role: player
-    occupied: false
-    tokenHash: null
+    occupied: true
+    tokenHash: 82c62d325e49d0e10f0a3a1ffc5ca717fc3cec5841a98d1a06fa7fa33b241799
     status: idle
-    online: false
-    lastSeenAt: null
+    online: true
+    lastSeenAt: '2026-05-05T08:42:31.476Z'
     dmEnabled: false
+    tokenHashes:
+      - 82c62d325e49d0e10f0a3a1ffc5ca717fc3cec5841a98d1a06fa7fa33b241799
+      - 2640150f1b47946071f66547a1670065253c2cca36d1f26694d3d2bfe6bc1cd3
+      - 6159c3d0df129620168c61ce2fd6b483e5b9122f4afe105250cdf1772bbb1e2d
+      - 7f5211aee8e8054d4222d09bcc934a0f18b2c1831db2412e264208448c711a15
+      - 5e139ba2996bb22d44c2aeeacb4bcdcb9f285b993614a01521b68dad2f376140
+      - c0fbdf862c619cf3f0a8df6172cc882e8764cc1944ec5f6cbdcf60973a15fe4e
+      - 4efca6d2dfa624bc2f634660ba71872b5589c8a21815e7a3f0fa64dd83433a38
+      - 4f632f0fe68250b2f61f3867f0004f2d0bb1b32ea30c58ec453a1117e7733ff2

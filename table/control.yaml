@@ -1,7 +1,21 @@
 version: 1
 bindings:
+  - characterPath: characters/active/周岚.md
+    label: 周岚
+    primarySeat: 习风
+    dmHosted: false
+    visibleTo:
+      - 习风
+    pendingTransfer: null
   - characterPath: characters/active/影子.md
     label: 影子
+    primarySeat: 习风
+    dmHosted: false
+    visibleTo:
+      - 习风
+    pendingTransfer: null
+  - characterPath: characters/active/林澈.md
+    label: 林澈
     primarySeat: 习风
     dmHosted: false
     visibleTo:
