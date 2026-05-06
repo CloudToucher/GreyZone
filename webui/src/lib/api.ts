@@ -17,6 +17,7 @@ export interface SessionCredentials {
   seatName: string
   role: 'dm' | 'player'
   token: string
+  dmEnabled?: boolean
 }
 
 export interface IntentSections {
@@ -24,6 +25,17 @@ export interface IntentSections {
   privateToDm: string
   longTerm: string
   triggers: string
+}
+
+export interface CharacterAction {
+  characterPath: string
+  characterName: string
+  playerSeat: string | null
+  publicAction: string
+  privateToDm: string
+  longTerm: string
+  triggers: string
+  aiHosted: boolean
 }
 
 export interface IntentDocument {
@@ -40,8 +52,29 @@ export interface CharacterSummary {
   title: string
   concept: string
   currentSituation: string
+  location: string
+  sceneId: string
+  partyId: string
+  visibilityScope: 'private' | 'scene' | 'public'
+  lifecycle: 'pending_contract' | 'active'
+  contractStatus: string
+  inGame: boolean
+  inventory: string[]
+  safeBox: Array<{ label: string; item: string; empty: boolean }>
+  semanticStatus: string[]
   stats: {
     level?: string | number
+    xp?: string | number
+    blood?: {
+      total: number
+      light: number
+      severe: number
+      narrative?: string
+    }
+    energy?: {
+      current: number
+      max: number
+    }
     hp?: string
     sp?: string
     ap?: string | number
@@ -62,6 +95,100 @@ export interface ControlBinding {
   } | null
 }
 
+export interface PublicIntentSummary {
+  seatName: string
+  status: 'idle' | 'ready' | 'submitted' | 'locked'
+  updatedAt: string | null
+  publicText: string
+  longTerm: string
+  characterNames: string[]
+  characterPaths: string[]
+  sceneId: string
+  location: string
+}
+
+export interface SceneThread {
+  id: string
+  location: string
+  partyIds: string[]
+  seatNames: string[]
+  characters: Array<{
+    name: string
+    path: string
+    controller: string | null
+    location: string
+    partyId: string
+  }>
+  statuses: Array<{ seatName: string; status: 'idle' | 'ready' | 'submitted' | 'locked' }>
+}
+
+export interface LatestResultSummary {
+  id: string
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  path: string
+  rawPath: string
+  updatedAt: string
+  title: string
+  excerpt: string
+  content: string
+  visibility: 'public' | 'scene' | 'private'
+}
+
+export interface AiQueueItem {
+  id: string
+  kind: 'action' | 'forge'
+  status: 'waiting' | 'composing' | 'running' | 'done' | 'error' | 'stale'
+  participantSeats: string[]
+  sceneIds: string[]
+  packetPath?: string
+  resultPath?: string | null
+  updatedAt: string
+  error?: string | null
+  title?: string
+  phase?: string
+  startedAt?: string | null
+  endedAt?: string | null
+  elapsedMs?: number | null
+  durationMs?: number | null
+  lastEventAt?: string | null
+  stale?: boolean
+  agentName?: string
+  currentStep?: string
+}
+
+export interface AgentArtifactStat {
+  name: string
+  path: string
+  exists: boolean
+  size: number
+  updatedAt: string | null
+}
+
+export interface AgentRunSummary {
+  id: string
+  agentName: string
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  title: string
+  status: 'waiting' | 'running' | 'validating' | 'done' | 'error' | 'stale'
+  rawStatus: 'waiting' | 'running' | 'validating' | 'done' | 'error'
+  phase: string
+  currentStep: string
+  createdAt: string
+  startedAt: string | null
+  endedAt: string | null
+  elapsedMs: number | null
+  durationMs: number | null
+  lastEventAt: string | null
+  stale: boolean
+  rawReady: boolean
+  participantSeats: string[]
+  participantCharacters: Array<{ name: string; path: string; controller: string | null; sceneId: string; partyId: string }>
+  artifacts: Record<string, string>
+  artifactStats: AgentArtifactStat[]
+  error: string | null
+  warnings: string[]
+}
+
 export interface RoomSnapshot {
   room: {
     version: number
@@ -77,6 +204,7 @@ export interface RoomSnapshot {
   viewer: {
     seatName: string
     role: 'dm' | 'player'
+    dmEnabled?: boolean
   }
   seats: Array<{
     name: string
@@ -91,9 +219,17 @@ export interface RoomSnapshot {
   visibleCharacters: CharacterSummary[]
   control: ControlBinding[]
   allIntents?: IntentDocument[]
+  publicIntents: PublicIntentSummary[]
+  sceneThreads: SceneThread[]
+  latestResults: LatestResultSummary[]
+  latestResultContent: string | null
+  aiQueue: AiQueueItem[]
+  agentRuns: AgentRunSummary[]
+  activeAgentRuns: AgentRunSummary[]
   sharedBoard: FilePayload | null
   archives: Array<{
     id: string
+    kind: 'action' | 'forge'
     packetPath: string
     resultPath: string | null
     updatedAt: string
@@ -113,11 +249,14 @@ export interface VisibleRoundState {
   participantSeats: string[]
   packetPath?: string
   resultPath?: string
+  resultContent?: string
+  resultMarker?: Record<string, unknown> | null
   affectedFiles: string[]
   logs?: Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string; ts: number }>
 }
 
 export interface ForgePayload {
+  name?: string
   concept?: string
   identity?: string
   motivation?: string
@@ -137,6 +276,12 @@ export interface OpencodeProbeResult {
   stderr: string
   model: string
   title: string
+  command: string
+  xdgConfigHome: string
+  timedOut: boolean
+  durationMs: number
+  error?: string
+  diagnosis?: string
 }
 
 export interface DiceStats {
@@ -149,7 +294,7 @@ export interface DiceStats {
 function authHeaders(session?: SessionCredentials) {
   const headers: Record<string, string> = {}
   if (session) {
-    headers['x-gz-seat'] = session.seatName
+    headers['x-gz-seat'] = encodeURIComponent(session.seatName)
     headers['x-gz-token'] = session.token
   }
   return headers
@@ -184,12 +329,55 @@ async function sendJson<T>(url: string, method: 'POST' | 'PUT', body: unknown, s
   return parseJson<T>(res)
 }
 
-export async function joinRoom(name: string, token?: string) {
-  return sendJson<{ session: SessionCredentials }>('/api/session/join', 'POST', { name, token })
+export async function joinRoom(name: string, token?: string, roomCode?: string) {
+  return sendJson<{ session: SessionCredentials }>('/api/session/join', 'POST', { name, token, roomCode })
 }
 
 export async function releaseSeatSession(session: SessionCredentials, seatName: string) {
   return sendJson<{ ok: true }>('/api/session/release', 'POST', { seatName }, session)
+}
+
+export async function enableDmConsoleSession(session: SessionCredentials, roomCode: string) {
+  return sendJson<{ session: SessionCredentials }>('/api/session/enable-dm', 'POST', { roomCode }, session)
+}
+
+export async function enterGreyZone(session: SessionCredentials, characterPath: string | string[]) {
+  const characterPaths = Array.isArray(characterPath) ? characterPath : [characterPath]
+  return sendJson<{ roundId: string; jobId?: string; jobIds?: string[]; jobs?: unknown[] }>(
+    '/api/game/enter',
+    'POST',
+    characterPaths.length === 1 ? { characterPath: characterPaths[0] } : { characterPaths },
+    session,
+  )
+}
+
+export async function askAssistant(
+  session: SessionCredentials,
+  question: string,
+  charSummary?: string,
+) {
+  return sendJson<{ roundId: string }>('/api/assistant/ask', 'POST', { question, charSummary }, session)
+}
+
+export async function runActionJob(session: SessionCredentials, actions: CharacterAction[]) {
+  return sendJson<{ jobId: string; job: unknown }>('/api/jobs/action', 'POST', { actions }, session)
+}
+
+export async function runForgeJob(session: SessionCredentials, forge: ForgePayload) {
+  return sendJson<{ jobId: string; job: unknown }>('/api/jobs/forge', 'POST', { forge }, session)
+}
+
+export interface SceneReadinessResult {
+  allReady: boolean
+  sceneId: string
+  totalSeats: number
+  readySeats: Array<{ seatName: string; status: string }>
+  notReadySeats: Array<{ seatName: string; status: string }>
+  dmHostedSeats: Array<{ seatName: string }>
+}
+
+export async function fetchSceneReadiness(session: SessionCredentials) {
+  return getJson<SceneReadinessResult>('/api/scene/readiness', session)
 }
 
 export async function fetchSnapshot(session: SessionCredentials) {
@@ -205,7 +393,7 @@ export async function saveMyIntent(
   sections: IntentSections,
   status?: 'idle' | 'ready' | 'submitted' | 'locked',
 ) {
-  return sendJson<IntentDocument>('/api/intents/self', 'PUT', { sections, status }, session)
+  return sendJson<IntentDocument & { readiness?: SceneReadinessResult; message?: string }>('/api/intents/self', 'PUT', { sections, status }, session)
 }
 
 export async function assignCharacter(
@@ -261,8 +449,21 @@ export async function saveFileSession(session: SessionCredentials, relPath: stri
   return sendJson<{ ok: true }>(`/api/file?path=${encodeURIComponent(relPath)}`, 'PUT', { content }, session)
 }
 
-export async function probeOpencode() {
-  return sendJson<OpencodeProbeResult>('/api/opencode/probe', 'POST', {})
+export async function probeOpencode(session: SessionCredentials) {
+  const res = await fetch('/api/opencode/probe', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(session),
+    },
+    body: JSON.stringify({}),
+  })
+  const data = await res.json().catch(() => null) as OpencodeProbeResult | { error?: string } | null
+  if (!res.ok) {
+    if (data && 'ok' in data) return data as OpencodeProbeResult
+    throw new Error(data?.error || `${res.status} ${res.statusText}`)
+  }
+  return data as OpencodeProbeResult
 }
 
 export function openEvents(

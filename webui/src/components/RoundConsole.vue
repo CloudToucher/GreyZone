@@ -33,7 +33,7 @@ function formatEvent(ev: RoundEvent): string {
     case 'round_created':
       return `已创建回合 ${String(meta?.roundId || '').slice(0, 8)}`
     case 'stream_open':
-      return '已连接实时日志流'
+      return '已连接执行记录流'
     case 'building_prompt':
       return '正在整理提示词与上下文'
     case 'prompt_ready':
@@ -174,14 +174,14 @@ watch(
             class="rounded-sm px-1.5 py-0.5 font-mono text-[10px]"
             :class="activeView === 'output' ? 'bg-paper-950 text-white' : 'text-paper-600 hover:text-paper-950'"
           >
-            输出
+            主回复
           </button>
           <button
             @click="activeView = 'log'"
             class="rounded-sm px-1.5 py-0.5 font-mono text-[10px]"
             :class="activeView === 'log' ? 'bg-paper-950 text-white' : 'text-paper-600 hover:text-paper-950'"
           >
-            日志
+            执行记录
           </button>
         </div>
         <label
@@ -206,7 +206,7 @@ watch(
         <div class="text-paper-500">
           <span class="text-crimson-400">$</span> 等待玩家提交本轮...
           <div class="mt-2 text-paper-600">
-            玩家在 PLAYGROUND 写好行动后点 <span class="text-ochre-400">[ 提交本轮 ]</span>，
+            玩家在行动语义板写好行动后点 <span class="text-ochre-400">[ 提交本轮 ]</span>，
             opencode 的实时输出将出现在这里。
           </div>
         </div>

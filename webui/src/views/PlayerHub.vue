@@ -31,10 +31,16 @@ const TIPS = [
 ]
 
 const quickLinks = [
-  { label: '创角', action: 'forge', desc: '提出你想扮演的人', tag: 'FORGE' },
+  { label: '创建角色', action: 'forge', desc: '提出你想扮演的人', tag: 'FORGE' },
   { label: '行动语义板', path: 'playground.md', desc: '组织本轮意图与上下文', tag: 'INTENT' },
   { label: '核心规则', path: 'rules/01_核心规则书.md', desc: '完整规则与世界约束', tag: 'RULES' },
   { label: '物资清单', path: 'assets/items/物品与掉落表.md', desc: '武器·弹药·消耗品参考', tag: 'LOOT' },
+]
+
+const readingOrder = [
+  { title: 'DM 当前回复', desc: '先看本轮场景、裁定、确认变化和下一步空间。' },
+  { title: '共享看板', desc: '再看公开局面、可见压力和跨回合持续状态。' },
+  { title: '角色卡', desc: '最后看自己的个人状态、装备、安全箱和处境。' },
 ]
 
 async function loadCharacters() {
@@ -92,9 +98,10 @@ onMounted(async () => {
   await loadCharacters()
 })
 
-function pct(b?: { cur: number; max: number }) {
+function pct(b?: { cur?: number; current?: number; max: number }) {
   if (!b || b.max <= 0) return 0
-  return Math.max(0, Math.min(100, (b.cur / b.max) * 100))
+  const cur = b.cur ?? b.current ?? 0
+  return Math.max(0, Math.min(100, (cur / b.max) * 100))
 }
 
 function open(path: string) {
@@ -158,6 +165,17 @@ watch(() => ply.currentName, () => {
       </div>
     </div>
 
+    <div class="mb-6 hud-frame">
+      <span class="corner-bl"></span><span class="corner-br"></span>
+      <div class="brief-heading !mb-3 !text-sm">玩家阅读顺序</div>
+      <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+        <div v-for="item in readingOrder" :key="item.title" class="rounded-sm border border-paper-200 bg-white p-3">
+          <div class="font-serif text-[13px] font-bold text-paper-950">{{ item.title }}</div>
+          <div class="mt-1 text-[11px] leading-relaxed text-paper-600">{{ item.desc }}</div>
+        </div>
+      </div>
+    </div>
+
     <div v-if="currentCharacter" class="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-[1.25fr_0.75fr]">
       <div class="hud-frame">
         <span class="corner-bl"></span><span class="corner-br"></span>
@@ -209,28 +227,39 @@ watch(() => ply.currentName, () => {
           <span class="corner-bl"></span><span class="corner-br"></span>
           <div class="brief-heading !mb-3 !text-sm">我的即时状态</div>
           <div v-if="currentCharacter.stats" class="space-y-3">
-            <div v-if="currentCharacter.stats.hp">
+            <div v-if="currentCharacter.stats.blood">
               <div class="mb-1 flex items-center justify-between font-mono text-[10px]">
-                <span class="font-bold text-crimson-700">HP</span>
-                <span>{{ currentCharacter.stats.hp.cur }}/{{ currentCharacter.stats.hp.max }}</span>
+                <span class="font-bold text-crimson-700">BLOOD</span>
+                <span>{{ currentCharacter.stats.blood.total }}</span>
               </div>
-              <div class="h-2 overflow-hidden rounded-sm bg-paper-200">
-                <div class="h-full bg-gradient-to-r from-crimson-700 to-crimson-500" :style="{ width: pct(currentCharacter.stats.hp) + '%' }"></div>
+              <div class="grid grid-cols-3 gap-2">
+                <div class="rounded-sm bg-paper-100 px-2 py-2 text-center">
+                  <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">总量</div>
+                  <div class="font-mono text-sm font-bold text-paper-950">{{ currentCharacter.stats.blood.total }}</div>
+                </div>
+                <div class="rounded-sm bg-paper-100 px-2 py-2 text-center">
+                  <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">轻伤</div>
+                  <div class="font-mono text-sm font-bold text-ochre-700">{{ currentCharacter.stats.blood.light }}</div>
+                </div>
+                <div class="rounded-sm bg-paper-100 px-2 py-2 text-center">
+                  <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">重伤</div>
+                  <div class="font-mono text-sm font-bold text-crimson-700">{{ currentCharacter.stats.blood.severe }}</div>
+                </div>
               </div>
             </div>
-            <div v-if="currentCharacter.stats.sp">
+            <div v-if="currentCharacter.stats.energy">
               <div class="mb-1 flex items-center justify-between font-mono text-[10px]">
-                <span class="font-bold text-forest-700">SP</span>
-                <span>{{ currentCharacter.stats.sp.cur }}/{{ currentCharacter.stats.sp.max }}</span>
+                <span class="font-bold text-forest-700">ENERGY</span>
+                <span>{{ currentCharacter.stats.energy.current }}/{{ currentCharacter.stats.energy.max }}</span>
               </div>
               <div class="h-2 overflow-hidden rounded-sm bg-paper-200">
-                <div class="h-full bg-gradient-to-r from-forest-700 to-forest-400" :style="{ width: pct(currentCharacter.stats.sp) + '%' }"></div>
+                <div class="h-full bg-gradient-to-r from-forest-700 to-forest-400" :style="{ width: pct(currentCharacter.stats.energy) + '%' }"></div>
               </div>
             </div>
             <div class="grid grid-cols-2 gap-2">
               <div class="rounded-sm bg-paper-100 px-2 py-2 text-center">
-                <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">AP</div>
-                <div class="font-mono text-lg font-bold text-navy-800">{{ currentCharacter.stats.ap ?? '—' }}</div>
+                <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">XP</div>
+                <div class="font-mono text-lg font-bold text-navy-800">{{ currentCharacter.stats.xp ?? '—' }}</div>
               </div>
               <div class="rounded-sm bg-paper-100 px-2 py-2 text-center">
                 <div class="font-mono text-[9px] uppercase tracking-[0.15em] text-paper-500">档案</div>
@@ -274,7 +303,7 @@ watch(() => ply.currentName, () => {
           <div class="font-bold text-paper-950">当前玩家尚未绑定独立角色档案</div>
           <div class="mt-1 text-sm leading-relaxed text-paper-600">
             当前身份是 <span class="font-bold text-crimson-700">{{ ply.currentName }}</span>。
-            你可以先进入「创角」生成一个属于这个身份的角色档案，随后工作台会自动把它绑定到当前玩家身份。
+            你可以先进入「创建角色」生成一个属于这个身份的角色档案，随后工作台会自动把它绑定到当前玩家身份。
           </div>
         </div>
       </div>
@@ -300,7 +329,7 @@ watch(() => ply.currentName, () => {
             <div class="absolute right-0 top-0 px-2 py-0.5 font-mono text-[9px] font-bold tracking-widest text-white bg-paper-700">{{ q.tag }}</div>
             <div class="mt-3 font-serif text-base font-bold text-paper-950">{{ q.label }}</div>
             <div class="mt-1 text-xs text-paper-600">{{ q.desc }}</div>
-            <div class="mt-3 font-mono text-[10px] text-paper-400">在创角页使用</div>
+            <div class="mt-3 font-mono text-[10px] text-paper-400">在创建角色页使用</div>
           </div>
         </template>
       </div>

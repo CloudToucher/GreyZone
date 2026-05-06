@@ -1,0 +1,27 @@
+id: 1777798641995-d785256d
+kind: assistant
+title: 规则助手 | 习风 | 2026/5/3 16:57:21
+status: done
+phase: finished
+worldWrite: false
+createdAt: '2026-05-03T08:57:21.995Z'
+updatedAt: '2026-05-03T10:13:31.545Z'
+startedAt: '2026-05-03T08:57:22.009Z'
+endedAt: '2026-05-03T10:10:10.781Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters: []
+artifacts:
+  manifest: table/jobs/1777798641995-d785256d/manifest.yaml
+  packet: table/jobs/1777798641995-d785256d/packet.md
+  prompt: table/jobs/1777798641995-d785256d/prompt.md
+  rawResult: table/jobs/1777798641995-d785256d/result.raw.md
+  parsedResult: table/jobs/1777798641995-d785256d/result.parsed.json
+  stdout: table/jobs/1777798641995-d785256d/stdout.log
+  stderr: table/jobs/1777798641995-d785256d/stderr.log
+  events: table/jobs/1777798641995-d785256d/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

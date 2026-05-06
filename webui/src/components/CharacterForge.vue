@@ -51,11 +51,11 @@ function buildForgePrompt() {
   const outputFile = (fileHint.value.trim() || '新角色').replace(/[\\/:*?"<>|]+/g, '_')
 
   return [
-    '# 灰区：撤离 — 创角请求',
+    '# 灰区：撤离 — 创建角色请求',
     '',
     '你是 AI DM。你的任务不是让玩家去套职业模板，而是根据玩家想扮演的人设、强度要求、风格要求和世界约束，生成一个可直接投入游戏的初始角色。',
     '',
-    '## 创角原则',
+    '## 创建角色原则',
     '1. 玩家输入优先，允许模糊、留白和不完整。',
     '2. 你负责给出合理的开局强度、初始资源、标志性装备、代价与隐患。',
     '3. 不要机械套用旧职业模板；可以参考世界风格，但不要把玩家锁进固定职业。',
@@ -113,7 +113,7 @@ function buildForgePrompt() {
 
 async function submitForge() {
   await round.startRound({
-    action: concept.value.trim() || '创角请求',
+    action: concept.value.trim() || '创建角色请求',
     kind: 'forge',
     forge: {
       concept: concept.value,
@@ -137,7 +137,7 @@ async function submitForge() {
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div class="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-ochre-300">CHARACTER FORGE</div>
-          <h2 class="mt-1 font-serif text-xl font-black text-white">自由创角</h2>
+          <h2 class="mt-1 font-serif text-xl font-black text-white">创建角色</h2>
           <p class="mt-1 max-w-3xl font-sans text-sm leading-relaxed text-white/80">
             这里不是职业表单。你只需要尽可能表达你想扮演什么人、想体验什么强度与气质，AI DM 会据此生成可直接游玩的初始角色与装备。
           </p>
@@ -266,7 +266,7 @@ async function submitForge() {
         <div class="space-y-4">
           <div class="clash-card overflow-hidden">
             <div class="clash-card-header flex items-center justify-between gap-2 px-4 py-3">
-              <div class="font-mono text-[10px] font-bold uppercase tracking-[0.18em]">提交给 DM 的组织结果</div>
+          <div class="font-mono text-[10px] font-bold uppercase tracking-[0.18em]">提交给 DM 的组织结果</div>
               <span class="stamp border-white/50 text-white">PROMPT PREVIEW</span>
             </div>
             <pre class="max-h-[70vh] overflow-auto whitespace-pre-wrap bg-paper-100 p-4 font-sans text-[12px] leading-relaxed text-paper-800">{{ promptPreview }}</pre>

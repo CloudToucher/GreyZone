@@ -2,13 +2,15 @@
 
 可视化 + 可交互地玩《灰区：撤离》。Vue 3 / Vite / Tailwind / opencode CLI 集成。
 
+- **玩家主看三块**：DM 当前回复 / 共享看板 / 自己的角色卡
+- **辅助面**：行动语义板用于写意图，执行记录只用于调试，不是主阅读入口
 - **顶部 Tab**：DM 视图 ↔ 角色视图
 - **角色视图（玩家）**：
-  - 首页 = MISSION BRIEFING 主控台（活跃角色 HP/SP/AP 预览 + 快速通道 + 提示）
-  - 上半屏 = **PLAYGROUND 编辑器**（textarea + 快速插入片段）+ **DM 控制台**（opencode 实时输出）
+  - 首页 = MISSION BRIEFING 主控台（当前角色摘要 + 公开局面 + 快速入口）
+  - 上半屏 = **行动语义板** + **DM 回复窗**
   - 下半屏 = 文档浏览（Markdown 渲染）
   - **提交本轮** = 保存 playground.md → 调起 opencode → 流式回显
-- **DM 视图（玩家的 DM）**：DM 工作台 + 控制台 + 文档浏览
+- **DM 视图（玩家的 DM）**：DM 工作台 + 回复窗 + 文档浏览
 - 浏览角色卡时（顶部带 YAML frontmatter）会显示游戏 HUD 状态条
 
 ## 启动
@@ -20,6 +22,24 @@ npm run dev
 ```
 
 打开 http://127.0.0.1:5173/
+
+## 朋友公网试玩
+
+最轻量方式：本机运行服务，外面用内网穿透访问本机端口。
+
+```powershell
+cd webui
+$env:GZ_WEB_HOST="127.0.0.1"
+$env:GZ_WEB_PORT="5173"
+$env:GZ_ROOM_CODE="给朋友的房间口令"
+npm run dev
+```
+
+然后用内网穿透工具把 `127.0.0.1:5173` 暴露成公网地址，把公网地址和 `GZ_ROOM_CODE` 发给玩家。任何玩家进入后，都可以通过右上角“添加DM控制台”并输入同一个 `GZ_ROOM_CODE` 来临时获得 DM 控制台。
+
+注意：
+- 如果不设置 `GZ_ROOM_CODE`，任何拿到公网地址的人都可以进入房间。
+- DM 入房后会自动运行一次 opencode 后台校验；顶部健康灯显示 `opencode OK/FAIL`、模型和耗时。也可以点“重跑自检”手动复查。默认超时 45 秒，可用 `GZ_OPENCODE_PROBE_TIMEOUT_MS` 调整。
 
 ## 角色卡 frontmatter 约定
 
@@ -52,9 +72,9 @@ attributes:
 2. 选择活跃角色（下拉框）
 3. 点 **提交本轮 →**
 4. 后端：保存 `playground.md` → spawn `opencode run -c <prompt>` → 流式输出到右侧 DM 控制台
-5. opencode 完成后，前端自动重新读取目录树 + 当前文件（DM 可能改了角色卡 / 写了日志 / 清了 playground）
+5. opencode 完成后，前端自动重新读取目录树 + 当前文件（DM 可能改了角色卡 / 写了执行记录 / 清了 playground）
 
-提示词 = **`dm_guide/快速开始_DM提示词.md`** + 当前角色卡 + `playground.md` + `tools/dice_pool.md` 顶部 60 行 + 你的本轮行动文本。
+提示词 = **`dm_guide/启动注入_AI_DM.md`** + 当前角色卡 + `table/shared_board.md` + `playground.md` + `tools/dice_pool.md` 顶部 60 行 + 你的本轮行动文本。
 
 ## 可见性 + 写权限矩阵
 
@@ -65,7 +85,7 @@ attributes:
 | `characters/templates/**` | ✅ | ✅ | ✅ | ❌ |
 | `characters/active/**` | ✅ | ✅ | ✅ | ✅ |
 | `assets/items/**` | ✅ | ✅ | ✅ | ❌ |
-| `logs/**` | ✅ | ✅ | ✅ | ✅ |
+| `logs/**` | ✅ | ✅ | ❌ | ❌ |
 | `dm_guide/**` `scenes/**` `story/**` `assets/enemies/**` `assets/npcs/**` `tools/**` | ✅ | ✅ | ❌ | ❌ |
 
 强校验在 `webui/server/files.ts`：白名单 + `..` 拒绝 + .md 仅写。

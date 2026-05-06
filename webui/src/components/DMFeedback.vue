@@ -33,7 +33,7 @@ function formatEvent(ev: RoundEvent): string {
     case 'round_created':
       return `已创建回合 ${String(meta?.roundId || '').slice(0, 8)}`
     case 'stream_open':
-      return '已连接实时日志流'
+      return '已连接执行记录流'
     case 'building_prompt':
       return '正在整理提示词、角色卡和共享板上下文'
     case 'prompt_ready':
@@ -83,10 +83,15 @@ interface OutputBlock {
 
 const SECTION_TYPES: Record<string, OutputBlock['type']> = {
   '场景推进': 'scene',
+  'Scene Progression': 'scene',
   '裁定': 'rule',
+  'Rulings': 'rule',
   '状态变化': 'update',
+  'Confirmed Changes': 'update',
   '新信息': 'text',
+  'New Information': 'text',
   '后续可选方向': 'text',
+  'Next Directions': 'text',
 }
 
 const blocks = computed<OutputBlock[]>(() => {
@@ -218,7 +223,7 @@ watch(() => round.status, (s) => {
       <div class="flex items-center gap-2">
         <span class="h-2 w-2 rounded-full"
           :class="round.status === 'running' || round.status === 'starting' ? 'bg-crimson-600 animate-pulse' : round.status === 'done' ? 'bg-forest-600' : round.status === 'error' ? 'bg-ochre-600' : 'bg-paper-400'" />
-        <span class="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-700">DM 裁决</span>
+        <span class="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-700">DM 回复</span>
         <span class="font-mono text-[10px] font-bold"
           :class="round.status === 'done' ? 'text-forest-700' : round.status === 'error' ? 'text-ochre-700' : 'text-paper-600'">
           {{ statusText }}
@@ -232,14 +237,14 @@ watch(() => round.status, (s) => {
             class="rounded-sm px-1.5 py-0.5 font-mono text-[10px]"
             :class="activeView === 'result' ? 'bg-paper-950 text-white' : 'text-paper-600 hover:text-paper-950'"
           >
-            裁决结果
+            主回复
           </button>
           <button
             @click="activeView = 'log'"
             class="rounded-sm px-1.5 py-0.5 font-mono text-[10px]"
             :class="activeView === 'log' ? 'bg-paper-950 text-white' : 'text-paper-600 hover:text-paper-950'"
           >
-            执行日志
+            执行记录
           </button>
         </div>
         <label class="flex items-center gap-1 font-mono text-[10px] text-paper-600 cursor-pointer">
@@ -257,7 +262,7 @@ watch(() => round.status, (s) => {
       <template v-if="round.status === 'idle' && !round.output">
         <div class="flex flex-col items-center gap-2 py-8">
           <div class="font-mono text-2xl text-paper-700">◆</div>
-          <div class="font-mono text-xs text-paper-500">提交本轮后，DM 裁决会显示在这里</div>
+          <div class="font-mono text-xs text-paper-500">提交本轮后，DM 回复会显示在这里</div>
           <div class="font-mono text-[10px] text-paper-600">包括：场景叙事 · 检定结果 · 状态变更 · 骰池消耗</div>
         </div>
       </template>

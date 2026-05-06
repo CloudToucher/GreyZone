@@ -329,6 +329,35 @@ body {
   transform: translateY(-1px);
 }
 
+.markdown-reader {
+  color: var(--paper-900);
+}
+
+.markdown-reader .md {
+  font-size: 15px;
+}
+
+.markdown-reader-compact .md {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.markdown-reader-compact .md h1 {
+  font-size: 1.45em;
+}
+
+.markdown-reader-compact .md h2 {
+  font-size: 1.18em;
+}
+
+.markdown-reader-compact .md h3 {
+  font-size: 1.05em;
+}
+
+.markdown-reader-compact .md pre {
+  max-height: 18rem;
+}
+
 /* Page card container */
 .page-card {
   background: #fff;

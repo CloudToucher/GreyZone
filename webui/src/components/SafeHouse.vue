@@ -26,7 +26,7 @@ const facilities = ref<Facility[]>([
 const safeBox = ref<SafeBoxSlot[]>([])
 const baseInventory = ref<string[]>([])
 const npcs = ref<NPC[]>([
-  { name: '老高', relation: '债主', note: '骡子胡同军火商，欠他2000信用点' },
+  { name: '老高', relation: '债主', note: '铆钉巷军火商，欠他2000信用点' },
   { name: '锯子', relation: '前队友', note: '前线工兵，现在基地附近活动，愿意组队' },
 ])
 
@@ -115,7 +115,7 @@ watch(() => ply.currentCharacterPath, () => {
     <div v-if="loading" class="p-4 font-mono text-xs text-paper-500">读取角色数据...</div>
     <div v-else-if="err" class="m-3 rounded border-l-4 border-crimson-600 bg-crimson-50 px-3 py-2 font-mono text-xs text-crimson-700">{{ err }}</div>
     <div v-else-if="!hasChar" class="m-3 rounded border border-dashed border-paper-300 bg-white px-4 py-3 text-sm text-paper-500">
-      当前玩家还没有绑定角色档案，先去「创角」生成一份正式档案。
+      当前玩家还没有绑定角色档案，先去「创建角色」生成一份正式档案。
     </div>
     <div v-else class="min-h-0 flex-1 overflow-y-auto p-3 space-y-3">
       <!-- Facilities -->

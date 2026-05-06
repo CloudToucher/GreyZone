@@ -1,0 +1,32 @@
+id: 1777798593577-89b9acf4
+kind: action
+title: AI DM 行动回合 | 习风 | 2026/5/3 16:56:33
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-03T08:56:33.577Z'
+updatedAt: '2026-05-03T10:13:31.543Z'
+startedAt: '2026-05-03T08:56:33.596Z'
+endedAt: '2026-05-03T10:10:10.782Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters:
+  - name: 影子
+    path: characters/active/影子.md
+    controller: 习风
+    sceneId: init_shadow
+    partyId: 影子
+artifacts:
+  manifest: table/jobs/1777798593577-89b9acf4/manifest.yaml
+  packet: table/jobs/1777798593577-89b9acf4/packet.md
+  prompt: table/jobs/1777798593577-89b9acf4/prompt.md
+  rawResult: table/jobs/1777798593577-89b9acf4/result.raw.md
+  parsedResult: table/jobs/1777798593577-89b9acf4/result.parsed.json
+  stdout: table/jobs/1777798593577-89b9acf4/stdout.log
+  stderr: table/jobs/1777798593577-89b9acf4/stderr.log
+  events: table/jobs/1777798593577-89b9acf4/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

@@ -63,9 +63,9 @@ function formatForgeEvent(ev: RoundEvent) {
     case 'round_created':
       return `已创建回合 ${String(meta?.roundId || '').slice(0, 8)}`
     case 'stream_open':
-      return '已连接实时日志流'
+      return '已连接执行记录流'
     case 'building_prompt':
-      return '正在整理创角提示词与绑定信息'
+      return '正在整理创建角色提示词与绑定信息'
     case 'prompt_ready':
       return `提示词已就绪 · ${meta?.promptBytes ?? '?'} bytes`
     case 'spawning':
@@ -222,10 +222,10 @@ watch(() => ws.currentPath, (p) => {
 
 const tabs: { id: PlayerTab; label: string; icon: string; badge?: () => string | number | undefined }[] = [
   { id: 'hub', label: '主控台', icon: '▣' },
-  { id: 'forge', label: '创角', icon: '✦' },
+  { id: 'forge', label: '创建角色', icon: '✦' },
   { id: 'playground', label: '行动语义', icon: '◈', badge: () => round.status === 'idle' ? '待命' : undefined },
   { id: 'safehouse', label: '角色资源', icon: '⌂' },
-  { id: 'dmfeedback', label: 'DM反馈', icon: '▶', badge: () => round.status === 'running' ? 'LIVE' : round.status === 'done' ? '✓' : undefined },
+  { id: 'dmfeedback', label: 'DM回复', icon: '▶', badge: () => round.status === 'running' ? 'LIVE' : round.status === 'done' ? '✓' : undefined },
   { id: 'docs', label: '文档', icon: '▣' },
 ]
 </script>
@@ -306,7 +306,7 @@ const tabs: { id: PlayerTab; label: string; icon: string; badge?: () => string |
               <div class="flex h-full flex-col">
                 <div class="clash-card-header px-4 py-3">
                   <div class="flex items-center justify-between gap-2">
-                    <div class="font-mono text-[10px] font-bold uppercase tracking-[0.18em]">创角结果</div>
+                    <div class="font-mono text-[10px] font-bold uppercase tracking-[0.18em]">创建角色结果</div>
                     <div class="flex items-center gap-1 rounded-sm border border-white/15 bg-white/5 px-1 py-0.5">
                       <button
                         @click="forgeSideView = 'result'"
@@ -320,7 +320,7 @@ const tabs: { id: PlayerTab; label: string; icon: string; badge?: () => string |
                         class="rounded-sm px-1.5 py-0.5 font-mono text-[10px]"
                         :class="forgeSideView === 'log' ? 'bg-white text-paper-950' : 'text-white/75 hover:text-white'"
                       >
-                        日志
+                        执行记录
                       </button>
                     </div>
                   </div>
@@ -342,7 +342,7 @@ const tabs: { id: PlayerTab; label: string; icon: string; badge?: () => string |
                           <span class="min-w-0">{{ entry.text }}</span>
                         </div>
                       </div>
-                      <div v-else class="font-mono text-[11px] text-paper-500">已提交创角请求，等待执行事件...</div>
+                      <div v-else class="font-mono text-[11px] text-paper-500">已提交创建角色请求，等待执行事件...</div>
                     </div>
                     <div class="clash-card p-3">
                       <div class="mb-2 flex items-center justify-between gap-2">
@@ -373,7 +373,7 @@ const tabs: { id: PlayerTab; label: string; icon: string; badge?: () => string |
                           <span class="min-w-0">{{ entry.text }}</span>
                         </div>
                       </div>
-                      <div v-else class="font-mono text-[11px] text-paper-500">已提交创角请求，等待执行事件...</div>
+                      <div v-else class="font-mono text-[11px] text-paper-500">已提交创建角色请求，等待执行事件...</div>
                     </div>
                     <div v-if="forgeSections.length === 0" class="clash-card border-dashed p-4 font-sans text-sm leading-relaxed text-paper-500">
                       这里会按「角色概念 / 初始状态 / 起始装备 / 优势 / 代价与隐患 / 当前处境 / 已写入文件」展示结果。

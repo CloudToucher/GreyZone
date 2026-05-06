@@ -1,0 +1,3 @@
+{"ts":"2026-05-04T18:49:37.074Z","type":"start","status":"running","phase":"agent-running"}
+{"ts":"2026-05-04T18:54:09.357Z","type":"raw-write","bytes":13963}
+{"ts":"2026-05-04T18:54:17.373Z","type":"end","code":0,"status":"done","repaired":false}

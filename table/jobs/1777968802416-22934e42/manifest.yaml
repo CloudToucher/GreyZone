@@ -1,0 +1,37 @@
+id: 1777968802416-22934e42
+kind: action
+title: AI DM 行动回合 | 习风 | 2026/5/5 16:13:22
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-05T08:13:22.416Z'
+updatedAt: '2026-05-05T08:20:53.108Z'
+startedAt: '2026-05-05T08:13:22.439Z'
+endedAt: '2026-05-05T08:20:53.108Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters:
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: B区仓库内部
+    partyId: 林澈
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: B区仓库内部
+    partyId: 周岚
+artifacts:
+  manifest: table/jobs/1777968802416-22934e42/manifest.yaml
+  packet: table/jobs/1777968802416-22934e42/packet.md
+  prompt: table/jobs/1777968802416-22934e42/prompt.md
+  rawResult: table/jobs/1777968802416-22934e42/result.raw.md
+  parsedResult: table/jobs/1777968802416-22934e42/result.parsed.json
+  stdout: table/jobs/1777968802416-22934e42/stdout.log
+  stderr: table/jobs/1777968802416-22934e42/stderr.log
+  events: table/jobs/1777968802416-22934e42/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

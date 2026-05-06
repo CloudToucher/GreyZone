@@ -1,0 +1,41 @@
+id: 1777967777025-c11e86bd
+kind: action
+title: AI DM 行动回合 | 习风 | 2026/5/5 15:56:17
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-05T07:56:17.029Z'
+updatedAt: '2026-05-05T08:01:27.741Z'
+startedAt: '2026-05-05T07:56:17.057Z'
+endedAt: '2026-05-05T08:01:27.741Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+participantCharacters:
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: 石化工厂·北侧冷却塔检修梯底部
+    partyId: 林澈
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: 石化工厂·北侧冷却塔检修梯底部
+    partyId: 周岚
+artifacts:
+  manifest: table/jobs/1777967777025-c11e86bd/manifest.yaml
+  packet: table/jobs/1777967777025-c11e86bd/packet.md
+  prompt: table/jobs/1777967777025-c11e86bd/prompt.md
+  rawResult: table/jobs/1777967777025-c11e86bd/result.raw.md
+  parsedResult: table/jobs/1777967777025-c11e86bd/result.parsed.json
+  stdout: table/jobs/1777967777025-c11e86bd/stdout.log
+  stderr: table/jobs/1777967777025-c11e86bd/stderr.log
+  events: table/jobs/1777967777025-c11e86bd/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings:
+  - '1777967777025-c11e86bd:2: 未识别标签：update'
+  - '1777967777025-c11e86bd:2: 缺少可见性标签，已降级为 DM-only。'
+  - '1777967777025-c11e86bd:3: 未识别标签：update'
+  - '1777967777025-c11e86bd:3: 缺少可见性标签，已降级为 DM-only。'
