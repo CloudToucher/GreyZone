@@ -1,0 +1,32 @@
+id: 1778091203429-9f71ba09
+kind: contract_onboarding
+title: 进入灰区 / 合同开局 | 托管AI | 2026/5/7 02:13:23
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-06T18:13:23.429Z'
+updatedAt: '2026-05-06T18:16:33.666Z'
+startedAt: '2026-05-06T18:13:23.444Z'
+endedAt: '2026-05-06T18:16:33.666Z'
+createdBy: 托管AI
+participantSeats:
+  - 托管AI
+participantCharacters:
+  - name: 乌鸫
+    path: characters/active/乌鸫.md
+    controller: 托管AI
+    sceneId: scene:未定位
+    partyId: party:未定位
+artifacts:
+  manifest: table/jobs/1778091203429-9f71ba09/manifest.yaml
+  packet: table/jobs/1778091203429-9f71ba09/packet.md
+  prompt: table/jobs/1778091203429-9f71ba09/prompt.md
+  rawResult: table/jobs/1778091203429-9f71ba09/result.raw.md
+  parsedResult: table/jobs/1778091203429-9f71ba09/result.parsed.json
+  stdout: table/jobs/1778091203429-9f71ba09/stdout.log
+  stderr: table/jobs/1778091203429-9f71ba09/stderr.log
+  events: table/jobs/1778091203429-9f71ba09/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

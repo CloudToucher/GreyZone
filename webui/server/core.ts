@@ -210,6 +210,11 @@ function normalizeSeatName(name: string) {
   return name.trim().replace(/\s+/g, ' ').slice(0, 40)
 }
 
+function looksLikeMangledSeatName(name: string) {
+  const compact = name.replace(/\s+/g, '')
+  return compact.includes('\uFFFD') || /^\?{2,}(?:[A-Za-z0-9_-]+)?$/.test(compact)
+}
+
 function relPath(...parts: string[]) {
   return parts.join('/').replace(/\\/g, '/')
 }
@@ -458,12 +463,17 @@ export async function saveSeats(root: string, seats: SeatsFile, options: { allow
             ...(existing.tokenHashes || []),
           ].filter(Boolean) as string[])).slice(0, 8)
           if (hashes.length || existing.tokenHash) {
+            const nextTokenHash = hashes[0] || existing.tokenHash || null
             const merged = {
               ...seat,
-              tokenHash: hashes[0] || existing.tokenHash,
+              tokenHash: nextTokenHash,
               tokenHashes: hashes,
             }
-            if (existing.tokenHash && !seat.tokenHash) {
+            if (nextTokenHash) {
+              merged.occupied = Boolean(seat.occupied || existing.occupied || nextTokenHash)
+              merged.online = Boolean(seat.online || existing.online)
+              merged.lastSeenAt = seat.lastSeenAt || existing.lastSeenAt || merged.lastSeenAt
+            } else if (existing.tokenHash && !seat.tokenHash) {
               merged.occupied = existing.occupied
               merged.online = existing.online
               merged.lastSeenAt = existing.lastSeenAt
@@ -630,6 +640,9 @@ export async function joinSeat(root: string, rawName: string, providedToken?: st
   await ensureTableState(root)
   const seatName = normalizeSeatName(rawName)
   if (!seatName) throw new Error('Seat name is required')
+  if (looksLikeMangledSeatName(seatName)) {
+    throw new Error('Seat name looks garbled. Re-enter the player name from the browser or send it as UTF-8.')
+  }
 
   const room = await loadRoom(root)
   const seatsFile = await loadSeats(root)
@@ -1221,7 +1234,7 @@ export async function finalizeSeatsAfterRound(root: string, seatNames: string[])
   const seatsFile = await loadSeats(root)
   for (const seatName of seatNames) {
     const seat = seatsFile.seats.find((entry) => entry.name === seatName)
-    if (seat && (seat.status === 'locked' || seat.status === 'submitted')) seat.status = 'idle'
+    if (seat && (seat.status === 'ready' || seat.status === 'submitted' || seat.status === 'locked')) seat.status = 'idle'
   }
   await saveSeats(root, seatsFile)
 }

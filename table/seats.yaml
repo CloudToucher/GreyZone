@@ -8,20 +8,31 @@ seats:
     online: false
     lastSeenAt: null
     dmEnabled: true
+  - name: 托管AI
+    role: player
+    occupied: false
+    tokenHash: null
+    status: idle
+    online: false
+    lastSeenAt: null
+    dmEnabled: false
   - name: 习风
     role: player
     occupied: true
-    tokenHash: 82c62d325e49d0e10f0a3a1ffc5ca717fc3cec5841a98d1a06fa7fa33b241799
+    tokenHash: 182e08955e417693c41c6ad65d58e9829880a9f1f3eb75125205a47018194c5a
     status: idle
     online: true
-    lastSeenAt: '2026-05-05T08:42:31.476Z'
+    lastSeenAt: '2026-05-07T04:10:14.693Z'
     dmEnabled: false
     tokenHashes:
-      - 82c62d325e49d0e10f0a3a1ffc5ca717fc3cec5841a98d1a06fa7fa33b241799
-      - 2640150f1b47946071f66547a1670065253c2cca36d1f26694d3d2bfe6bc1cd3
-      - 6159c3d0df129620168c61ce2fd6b483e5b9122f4afe105250cdf1772bbb1e2d
-      - 7f5211aee8e8054d4222d09bcc934a0f18b2c1831db2412e264208448c711a15
-      - 5e139ba2996bb22d44c2aeeacb4bcdcb9f285b993614a01521b68dad2f376140
-      - c0fbdf862c619cf3f0a8df6172cc882e8764cc1944ec5f6cbdcf60973a15fe4e
-      - 4efca6d2dfa624bc2f634660ba71872b5589c8a21815e7a3f0fa64dd83433a38
-      - 4f632f0fe68250b2f61f3867f0004f2d0bb1b32ea30c58ec453a1117e7733ff2
+      - 182e08955e417693c41c6ad65d58e9829880a9f1f3eb75125205a47018194c5a
+  - name: 支援AI
+    role: player
+    occupied: true
+    tokenHash: f09704ef8074fe584a8cbb073115a4740382129039ee56070df63a353560f857
+    status: idle
+    online: true
+    lastSeenAt: '2026-05-07T04:10:14.780Z'
+    dmEnabled: false
+    tokenHashes:
+      - f09704ef8074fe584a8cbb073115a4740382129039ee56070df63a353560f857

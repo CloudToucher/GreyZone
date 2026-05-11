@@ -1,0 +1,43 @@
+id: 1778122209976-5f131493
+kind: action
+title: AI DM 行动回合 | 支援AI | 2026/5/7 10:50:09
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-07T02:50:09.976Z'
+updatedAt: '2026-05-07T02:57:21.212Z'
+startedAt: '2026-05-07T02:50:09.996Z'
+endedAt: '2026-05-07T02:57:21.212Z'
+createdBy: 支援AI
+participantSeats:
+  - 支援AI
+  - 习风
+participantCharacters:
+  - name: 宋砚
+    path: characters/active/支援AI_宋砚.md
+    controller: 支援AI
+    sceneId: 南门岗亭内侧
+    partyId: 支援AI
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: 南门岗亭内侧
+    partyId: 周岚
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: 南门岗亭内侧
+    partyId: 林澈
+artifacts:
+  manifest: table/jobs/1778122209976-5f131493/manifest.yaml
+  packet: table/jobs/1778122209976-5f131493/packet.md
+  prompt: table/jobs/1778122209976-5f131493/prompt.md
+  rawResult: table/jobs/1778122209976-5f131493/result.raw.md
+  parsedResult: table/jobs/1778122209976-5f131493/result.parsed.json
+  stdout: table/jobs/1778122209976-5f131493/stdout.log
+  stderr: table/jobs/1778122209976-5f131493/stderr.log
+  events: table/jobs/1778122209976-5f131493/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

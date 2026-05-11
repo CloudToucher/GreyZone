@@ -51,18 +51,43 @@ const assistantBusy = ref(false)
 const assistantError = ref<string | null>(null)
 
 // These need to be defined before the polling watcher
+const characterOrder = ref<string[]>([])
+const draggedCharacter = ref<{ path: string; group: 'mine' | 'others' } | null>(null)
+const dragOverPath = ref<string | null>(null)
+let restoredActorKey = ''
+
+function characterOrderIndex(path: string) {
+  const index = characterOrder.value.indexOf(path)
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER
+}
+
+function orderCharacters(characters: CharacterSummary[]) {
+  return [...characters].sort((a, b) => {
+    const ai = characterOrderIndex(a.path)
+    const bi = characterOrderIndex(b.path)
+    return ai === bi ? characters.indexOf(a) - characters.indexOf(b) : ai - bi
+  })
+}
+
 const controlledCharacters = computed(() =>
-  props.snapshot.visibleCharacters.filter((character) =>
-    props.snapshot.control.some((binding) => binding.characterPath === character.path && binding.primarySeat === props.session.seatName),
+  orderCharacters(
+    props.snapshot.visibleCharacters.filter((character) =>
+      props.snapshot.control.some((binding) => binding.characterPath === character.path && binding.primarySeat === props.session.seatName),
+    ),
   ),
+)
+const controlledCharacterPaths = computed(() => new Set(controlledCharacters.value.map((character) => character.path)))
+const otherCharacters = computed(() =>
+  orderCharacters(props.snapshot.visibleCharacters.filter((character) => !controlledCharacterPaths.value.has(character.path))),
 )
 const activeCharacters = computed(() => controlledCharacters.value.filter((character) => character.inGame || character.lifecycle === 'active'))
 const pendingCharacters = computed(() => controlledCharacters.value.filter((character) => !character.inGame && character.lifecycle !== 'active'))
 
 const characterActions = reactive<Record<string, CharacterAction>>({})
 const selectedActionPaths = ref<string[]>([])
-const advancedOpen = reactive<Record<string, boolean>>({})
 const charExpanded = reactive<Record<string, boolean>>({})
+const charStatusOpen = reactive<Record<string, boolean>>({})
+const charActionOpen = reactive<Record<string, boolean>>({})
 
 // --- localStorage persistence for character selection & AI hosting ---
 function actorStorageKey() {
@@ -77,6 +102,7 @@ function persistActorState() {
   const payload = {
     selectedPaths: selectedActionPaths.value,
     aiHosted,
+    characterOrder: characterOrder.value,
   }
   try {
     localStorage.setItem(actorStorageKey(), JSON.stringify(payload))
@@ -84,12 +110,18 @@ function persistActorState() {
 }
 
 function restoreActorState() {
+  const key = actorStorageKey()
+  const shouldRestoreListState = restoredActorKey !== key
+  if (shouldRestoreListState) restoredActorKey = key
   try {
-    const raw = localStorage.getItem(actorStorageKey())
+    const raw = localStorage.getItem(key)
     if (!raw) return
     const payload = JSON.parse(raw)
-    if (Array.isArray(payload.selectedPaths)) {
+    if (shouldRestoreListState && Array.isArray(payload.selectedPaths)) {
       selectedActionPaths.value = payload.selectedPaths
+    }
+    if (shouldRestoreListState && Array.isArray(payload.characterOrder)) {
+      characterOrder.value = payload.characterOrder.filter((path: unknown): path is string => typeof path === 'string')
     }
     if (payload.aiHosted && typeof payload.aiHosted === 'object') {
       for (const key of Object.keys(payload.aiHosted)) {
@@ -99,6 +131,17 @@ function restoreActorState() {
       }
     }
   } catch { /* ignore */ }
+}
+
+function rememberVisibleCharacterOrder() {
+  const visiblePaths = props.snapshot.visibleCharacters.map((character) => character.path)
+  const visible = new Set(visiblePaths)
+  const remembered = characterOrder.value.filter((path) => visible.has(path))
+  const missing = visiblePaths.filter((path) => !remembered.includes(path))
+  const next = [...remembered, ...missing]
+  if (next.join('\n') !== characterOrder.value.join('\n')) {
+    characterOrder.value = next
+  }
 }
 
 // Watch changes and persist
@@ -117,6 +160,25 @@ watch(
   },
   () => persistActorState(),
   { deep: true },
+)
+watch(
+  () => characterOrder.value.map((p) => p),
+  () => persistActorState(),
+  { deep: true },
+)
+watch(
+  () => props.session.seatName,
+  () => {
+    restoredActorKey = ''
+    restoreActorState()
+    rememberVisibleCharacterOrder()
+  },
+  { immediate: true },
+)
+watch(
+  () => props.snapshot.visibleCharacters.map((character) => character.path),
+  () => rememberVisibleCharacterOrder(),
+  { immediate: true },
 )
 
 type PlayPhase = '休整' | '出发' | '探索' | '战斗' | '撤离'
@@ -154,8 +216,9 @@ watch(
         characterActions[character.path].characterName = character.name
         characterActions[character.path].playerSeat = props.session.seatName
       }
-      if (advancedOpen[character.path] == null) advancedOpen[character.path] = false
       if (charExpanded[character.path] == null) charExpanded[character.path] = false
+      if (charStatusOpen[character.path] == null) charStatusOpen[character.path] = false
+      if (charActionOpen[character.path] == null) charActionOpen[character.path] = true
     }
     restoreActorState()
   },
@@ -228,14 +291,57 @@ const nextActionOptions = computed(() => {
   return Array.from(new Set(lines)).slice(0, 3)
 })
 
-const selectedResultIndex = ref(-1)
+const selectedResultIndex = ref(0)
 const recentNarrativeResults = computed(() =>
   (props.snapshot.latestResults || []).filter((result) => result.kind !== 'assistant').slice(0, 5),
 )
-const selectedHistoryContent = computed(() => {
-  if (selectedResultIndex.value < 0 || selectedResultIndex.value >= recentNarrativeResults.value.length) return null
-  return recentNarrativeResults.value[selectedResultIndex.value]
+type NarrativeEntry = {
+  id: string
+  path: string
+  title: string
+  updatedAt: string
+  content: string
+  excerpt: string
+  isCurrent: boolean
+}
+
+const narrativeEntries = computed<NarrativeEntry[]>(() => {
+  const current = {
+    id: 'current',
+    path: props.round?.resultPath || props.snapshot.latestResults?.[0]?.path || '',
+    title: latestNarrativeResult.value?.title || '最新',
+    updatedAt: latestNarrativeResult.value?.updatedAt || props.snapshot.room.updatedAt,
+    content: props.round?.resultContent || props.snapshot.latestResultContent || latestNarrativeResult.value?.content || '',
+    excerpt: latestNarrativeResult.value?.excerpt || '当前最新结果',
+    isCurrent: true,
+  }
+  const history = recentNarrativeResults.value.map((result) => ({
+    id: result.id,
+    path: result.path,
+    title: result.title,
+    updatedAt: result.updatedAt,
+    content: result.content,
+    excerpt: result.excerpt,
+    isCurrent: false,
+  }))
+  return [current, ...history]
 })
+
+const selectedHistoryContent = computed(() => {
+  if (selectedResultIndex.value < 0 || selectedResultIndex.value >= narrativeEntries.value.length) return null
+  return narrativeEntries.value[selectedResultIndex.value]
+})
+
+watch(
+  narrativeEntries,
+  (entries) => {
+    if (!entries.length) return
+    if (selectedResultIndex.value < 0 || selectedResultIndex.value >= entries.length) {
+      selectedResultIndex.value = 0
+    }
+  },
+  { immediate: true },
+)
 
 function inferPhaseFromText(text: string): PlayPhase {
   if (/撤离|撤退|撤出|返回据点|归队|战利品结算|脱离/.test(text)) return '撤离'
@@ -529,6 +635,73 @@ function enterSelectedCharacters() {
   enterCharacters(selectedEnterablePaths.value)
 }
 
+function charactersForSortGroup(group: 'mine' | 'others') {
+  return group === 'mine' ? controlledCharacters.value : otherCharacters.value
+}
+
+function isCharacterEnabled(character: CharacterSummary, group: 'mine' | 'others') {
+  if (group === 'mine') return selectedActionPaths.value.includes(character.path)
+  return character.inGame || character.lifecycle === 'active'
+}
+
+function dragHandleTone(character: CharacterSummary, group: 'mine' | 'others') {
+  if (group === 'mine') {
+    return isCharacterEnabled(character, group)
+      ? 'bg-crimson-700'
+      : 'bg-paper-400'
+  }
+  if (character.inGame || character.lifecycle === 'active') {
+    return enteringCharacterPaths.value.has(character.path) ? 'bg-ochre-500' : 'bg-forest-600'
+  }
+  return enteringCharacterPaths.value.has(character.path) ? 'bg-ochre-500' : 'bg-paper-500'
+}
+
+function dragHandleTitle(character: CharacterSummary, group: 'mine' | 'others') {
+  if (group === 'mine') {
+    return isCharacterEnabled(character, group)
+      ? '已启用，按住可拖动排序'
+      : '未启用，按住可拖动排序'
+  }
+  if (enteringCharacterPaths.value.has(character.path)) return '该角色正在进入灰区，按住可拖动排序'
+  return character.inGame || character.lifecycle === 'active'
+    ? '已入局，按住可拖动排序'
+    : '待入局，按住可拖动排序'
+}
+
+function moveCharacter(group: 'mine' | 'others', fromPath: string, toPath: string) {
+  if (fromPath === toPath) return
+  const groupPaths = charactersForSortGroup(group).map((character) => character.path)
+  const fromIndex = groupPaths.indexOf(fromPath)
+  const toIndex = groupPaths.indexOf(toPath)
+  if (fromIndex < 0 || toIndex < 0) return
+  const nextGroupPaths = [...groupPaths]
+  const [moved] = nextGroupPaths.splice(fromIndex, 1)
+  nextGroupPaths.splice(toIndex, 0, moved)
+  const groupSet = new Set(groupPaths)
+  const outsideGroup = characterOrder.value.filter((path) => !groupSet.has(path))
+  characterOrder.value = [...outsideGroup, ...nextGroupPaths]
+}
+
+function startCharacterDrag(group: 'mine' | 'others', path: string) {
+  draggedCharacter.value = { group, path }
+  dragOverPath.value = path
+}
+
+function finishCharacterDrag() {
+  draggedCharacter.value = null
+  dragOverPath.value = null
+}
+
+function dropCharacter(group: 'mine' | 'others', targetPath: string) {
+  const dragged = draggedCharacter.value
+  if (!dragged || dragged.group !== group) {
+    finishCharacterDrag()
+    return
+  }
+  moveCharacter(group, dragged.path, targetPath)
+  finishCharacterDrag()
+}
+
 function submitForge() {
   emit('runForge', { ...forge })
 }
@@ -618,59 +791,80 @@ function bloodLabel(character: CharacterSummary) {
           <div class="mt-1 text-sm text-white/80">
             {{ round?.kind === 'forge' ? '欢迎场景' : '行动处理结果' }}
             <span v-if="round?.resultMarker" class="ml-2 font-mono text-[10px] opacity-60">{{ round.resultMarker.type || 'done' }}</span>
-            <span v-else class="ml-2">共 {{ recentNarrativeResults.length }} 条历史记录</span>
+            <span v-else class="ml-2">共 {{ narrativeEntries.length }} 条结果</span>
           </div>
         </div>
-        <div class="flex gap-3 p-4">
-          <div v-if="recentNarrativeResults.length > 1" class="shrink-0 space-y-1" style="width:3.5rem">
-            <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600 mb-2">历史</div>
+        <div class="grid gap-4 p-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
+          <div v-if="narrativeEntries.length > 1" class="space-y-2">
             <button
-              v-for="(result, idx) in recentNarrativeResults"
-              :key="idx"
-              @click="selectedResultIndex = selectedResultIndex === idx ? -1 : idx"
-              class="w-full rounded-sm border px-2 py-1.5 text-center font-mono text-sm font-bold transition-colors"
-              :class="selectedResultIndex === idx ? 'border-navy-600 bg-navy-100 text-navy-900' : 'border-paper-300 bg-white text-paper-700 hover:border-paper-500'"
-              :title="result.title || '历史回复'"
+              v-for="(entry, idx) in narrativeEntries"
+              :key="`${entry.id}-${idx}`"
+              @click="selectedResultIndex = idx"
+              class="group w-full rounded-sm border p-3 text-left transition"
+              :class="selectedResultIndex === idx ? 'border-navy-700 bg-navy-50 shadow-[0_8px_18px_rgba(15,23,42,0.08)]' : 'border-paper-300 bg-white hover:border-paper-500 hover:bg-paper-50'"
+              :title="entry.title"
             >
-              {{ idx + 1 }}
-            </button>
-            <button
-              v-if="selectedResultIndex >= 0"
-              @click="selectedResultIndex = -1"
-              class="w-full rounded-sm border border-paper-300 bg-paper-50 px-2 py-1.5 text-center font-mono text-[10px] text-paper-700 hover:bg-white"
-            >
-              最新
+              <div class="flex items-start gap-3">
+                <div
+                  class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[2px] border font-mono text-[10px] font-bold tracking-[0.12em]"
+                  :class="selectedResultIndex === idx ? 'border-navy-700 bg-navy-700 text-white' : 'border-paper-300 bg-paper-100 text-paper-600'"
+                >
+                  {{ String(idx + 1).padStart(2, '0') }}
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="truncate font-serif text-sm font-bold text-paper-950">
+                      {{ entry.title }}
+                    </div>
+                    <span class="shrink-0 rounded-sm border border-paper-300 bg-paper-100 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-[0.12em] text-paper-600">
+                      #{{ idx + 1 }}
+                    </span>
+                  </div>
+                  <div class="mt-1 truncate text-[11px] leading-5 text-paper-600">
+                    {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+                  </div>
+                  <div class="mt-1 truncate text-xs leading-5 text-paper-700">
+                    {{ entry.excerpt || '暂无摘要' }}
+                  </div>
+                </div>
+              </div>
             </button>
           </div>
-          <div class="min-w-0 flex-1">
-            <template v-if="selectedResultIndex >= 0 && selectedHistoryContent">
-              <div class="mb-3 flex items-center gap-2 text-xs text-paper-600">
-                <span class="font-mono font-bold">#{{ selectedResultIndex + 1 }}</span>
-                <span>{{ selectedHistoryContent.title }}</span>
-                <span class="text-paper-400">·</span>
-                <span>{{ new Date(selectedHistoryContent.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</span>
-                <button
-                  @click="emit('openFile', selectedHistoryContent.path)"
-                  class="ml-auto rounded-sm border border-paper-300 bg-white px-2 py-0.5 font-mono text-[10px] text-paper-800 hover:border-navy-700"
+          <div class="min-w-0 rounded-sm border border-paper-300 bg-white p-4 shadow-[0_8px_18px_rgba(12,10,9,0.04)]">
+            <template v-if="selectedHistoryContent">
+              <div class="mb-3 flex flex-wrap items-center gap-2 border-b border-paper-200 pb-3">
+                <span
+                  class="rounded-sm border px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.12em]"
+                  :class="selectedResultIndex === 0 ? 'border-crimson-700 bg-crimson-600 text-white' : 'border-paper-300 bg-paper-100 text-paper-600'"
                 >
-                  查看文件
+                  {{ selectedResultIndex === 0 ? '当前' : `#${selectedResultIndex + 1}` }}
+                </span>
+                <span class="min-w-0 truncate font-serif text-base font-bold text-paper-950">
+                  {{ selectedHistoryContent.title }}
+                </span>
+                <span class="font-mono text-[10px] text-paper-500">
+                  {{ new Date(selectedHistoryContent.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}
+                </span>
+                <button
+                  v-if="selectedHistoryContent.path"
+                  @click="emit('openFile', selectedHistoryContent.path)"
+                  class="ml-auto rounded-sm border border-paper-300 bg-white px-2 py-0.5 font-mono text-[10px] text-paper-800 hover:border-navy-700 hover:text-navy-800"
+                >
+                  打开文件
                 </button>
               </div>
               <RenderedMarkdown :content="selectedHistoryContent.content" compact max-height="38rem" />
             </template>
-            <template v-else>
-              <RenderedMarkdown :content="round?.resultContent || snapshot.latestResultContent || latestNarrativeResult?.content || ''" compact max-height="38rem" />
-            </template>
           </div>
         </div>
         <div v-if="nextActionOptions.length || confirmedChanges" class="border-t border-paper-300 grid gap-3 p-4 lg:grid-cols-2">
-          <div v-if="confirmedChanges && (selectedResultIndex < 0)" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+          <div v-if="confirmedChanges && selectedResultIndex === 0" class="rounded-sm border border-paper-300 bg-paper-100 p-3">
             <div class="font-mono text-[10px] font-bold tracking-[0.16em] text-paper-600">已确认变化</div>
             <div class="mt-2 max-h-44 overflow-auto text-sm leading-6 text-paper-850">
               <RenderedMarkdown :content="confirmedChanges" compact />
             </div>
           </div>
-          <div v-if="nextActionOptions.length" class="rounded-sm border border-paper-300 bg-white p-3" :class="!confirmedChanges || selectedResultIndex >= 0 ? 'lg:col-span-2' : ''">
+          <div v-if="nextActionOptions.length" class="rounded-sm border border-paper-300 bg-white p-3" :class="!confirmedChanges || selectedResultIndex !== 0 ? 'lg:col-span-2' : ''">
             <div class="font-mono text-[10px] font-bold tracking-[0.16em] text-paper-600">下一步建议</div>
             <div class="mt-2 space-y-2">
               <button
@@ -721,178 +915,6 @@ function bloodLabel(character: CharacterSummary) {
           </div>
         </div>
       </details>
-
-      <div class="hud-frame">
-        <span class="corner-bl"></span><span class="corner-br"></span>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <div class="font-mono text-[10px] uppercase tracking-[0.18em] text-crimson-700">我的角色</div>
-            <div class="mt-1 font-serif text-xl font-bold text-paper-950">
-              {{ controlledCharacters.length ? `${controlledCharacters.length} 个可控角色` : '尚未绑定角色' }}
-            </div>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              v-if="pendingCharacters.length > 1"
-              @click="enterSelectedCharacters"
-              :disabled="busy || !selectedEnterablePaths.length"
-              class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
-            >
-              批量进入灰区（{{ selectedEnterablePaths.length }}）
-            </button>
-            <span class="stamp text-paper-800">席位：{{ statusText[seatStatus] || seatStatus }}</span>
-          </div>
-        </div>
-
-        <div v-if="controlledCharacters.length" class="mt-4 grid gap-3">
-          <article v-for="character in controlledCharacters" :key="character.path" class="clash-card p-4">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="font-serif text-lg font-bold text-paper-950">{{ character.name }}</div>
-                <div class="mt-1 font-mono text-[10px] tracking-[0.12em] text-paper-700">
-                  {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
-                </div>
-              </div>
-              <div class="flex flex-wrap items-center gap-2">
-                <template v-if="character.inGame || character.lifecycle === 'active'">
-                  <label class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
-                    <input v-model="selectedActionPaths" :value="character.path" type="checkbox" class="accent-crimson-600" />
-                    {{ selectedActionPaths.includes(character.path) ? '本轮参与' : '本轮待命' }}
-                  </label>
-                  <label class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
-                    <input v-model="characterActions[character.path].aiHosted" type="checkbox" class="accent-navy-800" />
-                    AI 托管
-                  </label>
-                  <span class="stamp text-forest-700">已入局</span>
-                </template>
-                <template v-else>
-                  <label
-                    class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-paper-800"
-                    :class="enteringCharacterPaths.has(character.path) ? 'opacity-40' : ''"
-                  >
-                    <input
-                      v-model="selectedEnterPaths"
-                      :value="character.path"
-                      :disabled="busy || enteringCharacterPaths.has(character.path)"
-                      type="checkbox"
-                      class="accent-navy-800"
-                    />
-                    加入批量
-                  </label>
-                  <button
-                    @click="emit('openFile', character.path)"
-                    class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
-                  >
-                    角色详情
-                  </button>
-                  <button
-                    @click="enterCharacter(character.path)"
-                    :disabled="busy || enteringCharacterPaths.has(character.path)"
-                    class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
-                  >
-                    {{ enteringCharacterPaths.has(character.path) ? '合同处理中...' : '该角色进入灰区' }}
-                  </button>
-                </template>
-                <button
-                  @click="charExpanded[character.path] = !charExpanded[character.path]"
-                  class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
-                >
-                  {{ charExpanded[character.path] ? '收起' : '展开详情' }}
-                </button>
-              </div>
-            </div>
-
-            <div v-if="charExpanded[character.path]" class="mt-4 space-y-4">
-              <div>
-                <div class="font-mono text-[10px] tracking-[0.18em] text-paper-600">血槽</div>
-                <div class="mt-2 flex flex-wrap gap-1.5" :aria-label="bloodLabel(character)">
-                  <span
-                    v-for="slot in bloodSlots(character)"
-                    :key="slot.key"
-                    class="h-5 w-5 rounded-[2px] border border-paper-950"
-                    :class="slot.state === 'healthy' ? 'bg-crimson-600' : slot.state === 'light' ? 'bg-ochre-500' : 'bg-paper-950'"
-                    :title="slot.state === 'healthy' ? '红：可用血槽' : slot.state === 'light' ? '橙：受损血槽' : '黑：重创血槽'"
-                  ></span>
-                  <span v-if="!bloodSlots(character).length" class="text-sm text-paper-700">未记录血槽</span>
-                </div>
-                <div class="mt-2 flex flex-wrap gap-2 text-[11px] leading-5 text-paper-700">
-                  <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-crimson-600"></span>红</span>
-                  <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-ochre-500"></span>橙</span>
-                  <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-paper-950"></span>黑</span>
-                  <span>{{ bloodLabel(character) }}</span>
-                </div>
-              </div>
-
-              <div class="grid gap-3 lg:grid-cols-3">
-                <div class="rounded-sm border border-paper-300 bg-white p-3">
-                  <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">背包 / 随身物品</div>
-                  <div v-if="character.inventory.length" class="mt-2 flex flex-wrap gap-2">
-                    <span v-for="item in character.inventory" :key="item" class="stamp text-paper-800">{{ item }}</span>
-                  </div>
-                  <div v-else class="mt-2 text-sm text-paper-700">未提取到物品。</div>
-                </div>
-                <div class="rounded-sm border border-paper-300 bg-white p-3">
-                  <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">安全箱</div>
-                  <div v-if="character.safeBox.length" class="mt-2 grid grid-cols-2 gap-2">
-                    <div
-                      v-for="slot in character.safeBox"
-                      :key="slot.label"
-                      class="rounded-sm border px-2 py-2 text-xs leading-5"
-                      :class="slot.empty ? 'border-paper-300 bg-paper-100 text-paper-600' : 'border-ochre-400 bg-ochre-50 text-paper-900'"
-                    >
-                      <div class="font-mono text-[10px] tracking-[0.12em]">{{ slot.label }}</div>
-                      <div class="mt-1 truncate">{{ slot.empty ? '空' : slot.item }}</div>
-                    </div>
-                  </div>
-                  <div v-else class="mt-2 text-sm text-paper-700">未记录安全箱。</div>
-                </div>
-                <div class="rounded-sm border border-paper-300 bg-white p-3">
-                  <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">语义状态栏</div>
-                  <div v-if="character.semanticStatus.length" class="mt-2 space-y-1 text-sm leading-6 text-paper-800">
-                    <div v-for="entry in character.semanticStatus" :key="entry" class="truncate">- {{ entry }}</div>
-                  </div>
-                  <div v-else class="mt-2 text-sm text-paper-700">暂无语义状态。</div>
-                </div>
-              </div>
-
-              <div v-if="character.inGame || character.lifecycle === 'active'" class="border-t border-paper-300 pt-4">
-                <div class="font-mono text-[10px] tracking-[0.18em] text-paper-600 mb-3">行动输入</div>
-                <label class="space-y-1">
-                  <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">核心意图（一句话即可，同场景可见）</div>
-                  <textarea
-                    v-model="characterActions[character.path].publicAction"
-                    rows="3"
-                    class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6"
-                    :disabled="!selectedActionPaths.includes(character.path)"
-                    placeholder="例：侦察前方道路 / 掩护队友撤离 / 搜索房间。也可以写复杂行动。"
-                  />
-                </label>
-                <button
-                  type="button"
-                  @click="advancedOpen[character.path] = !advancedOpen[character.path]"
-                  class="mt-3 w-fit rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 hover:border-navy-700 hover:text-navy-800"
-                >
-                  {{ advancedOpen[character.path] ? '收起复杂输入' : '展开复杂输入' }}
-                </button>
-                <div v-if="advancedOpen[character.path]" class="grid gap-3 mt-3">
-                  <label class="space-y-1">
-                    <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
-                    <textarea v-model="characterActions[character.path].privateToDm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="只给 AI DM 的真实目的、试探、隐瞒或底线。" />
-                  </label>
-                  <div class="grid gap-3 md:grid-cols-2">
-                    <textarea v-model="characterActions[character.path].longTerm" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="长期目标，例如：找到妹妹的线索。" />
-                    <textarea v-model="characterActions[character.path].triggers" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="触发条件，例如：如果职员回避安全箱问题就追问。" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </article>
-        </div>
-
-        <div v-else class="mt-4 rounded-sm border border-dashed border-paper-400 bg-paper-100 p-4 text-sm leading-7 text-paper-800">
-          创建角色后这里只显示关键 HUD；完整角色卡从"角色详情"进入。
-        </div>
-      </div>
 
       <div v-if="pendingTransfers.length" class="hud-frame hatch-warn">
         <span class="corner-bl"></span><span class="corner-br"></span>
@@ -962,6 +984,319 @@ function bloodLabel(character: CharacterSummary) {
             <span class="font-mono text-[10px] tracking-[0.18em]" :class="statusColor[seatStatus] || 'text-paper-800'">
               {{ statusText[seatStatus] || seatStatus }}
             </span>
+          </div>
+
+          <div class="border-t border-paper-300 pt-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-700">我的角色</div>
+                <div class="mt-1 text-xs leading-5 text-paper-600">拖动排序后会自动记住，下次打开保持一致。</div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-if="pendingCharacters.length > 1"
+                  @click="enterSelectedCharacters"
+                  :disabled="busy || !selectedEnterablePaths.length"
+                  class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
+                >
+                  批量进入灰区（{{ selectedEnterablePaths.length }}）
+                </button>
+                <span class="stamp text-paper-800">{{ controlledCharacters.length }} 个可控角色</span>
+              </div>
+            </div>
+
+            <div v-if="controlledCharacters.length" class="mt-3 space-y-3">
+              <article
+                v-for="character in controlledCharacters"
+                :key="character.path"
+                class="rounded-sm border border-paper-300 bg-paper-100 p-3 transition"
+                :class="dragOverPath === character.path ? 'border-crimson-600 bg-crimson-50' : ''"
+                @dragover.prevent="dragOverPath = character.path"
+                @dragleave="dragOverPath = null"
+                @drop.prevent="dropCharacter('mine', character.path)"
+              >
+                <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                  <div class="flex min-w-0 items-start gap-2">
+                    <button
+                      type="button"
+                      draggable="true"
+                      class="h-12 w-3 shrink-0 cursor-grab rounded-[1px] active:cursor-grabbing"
+                      :class="dragHandleTone(character, 'mine')"
+                      :title="dragHandleTitle(character, 'mine')"
+                      :aria-label="dragHandleTitle(character, 'mine')"
+                      @dragstart="startCharacterDrag('mine', character.path)"
+                      @dragend="finishCharacterDrag"
+                    >
+                      <span class="sr-only">拖动排序</span>
+                    </button>
+                    <div class="min-w-0">
+                      <div class="font-serif text-base font-bold text-paper-950">{{ character.name }}</div>
+                      <div class="mt-1 font-mono text-[10px] tracking-[0.12em] text-paper-700">
+                        {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+                    <template v-if="character.inGame || character.lifecycle === 'active'">
+                      <label class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                        <input v-model="selectedActionPaths" :value="character.path" type="checkbox" class="accent-crimson-600" />
+                        {{ selectedActionPaths.includes(character.path) ? '本轮参与' : '本轮待命' }}
+                      </label>
+                      <label v-if="characterActions[character.path]" class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800">
+                        <input v-model="characterActions[character.path].aiHosted" type="checkbox" class="accent-navy-800" />
+                        AI 托管
+                      </label>
+                      <span class="stamp text-forest-700">已入局</span>
+                    </template>
+                    <template v-else>
+                      <label
+                        class="inline-flex items-center gap-2 rounded-sm border border-paper-300 bg-white px-3 py-2 font-mono text-[11px] font-bold tracking-[0.12em] text-paper-800"
+                        :class="enteringCharacterPaths.has(character.path) ? 'opacity-40' : ''"
+                      >
+                        <input
+                          v-model="selectedEnterPaths"
+                          :value="character.path"
+                          :disabled="busy || enteringCharacterPaths.has(character.path)"
+                          type="checkbox"
+                          class="accent-navy-800"
+                        />
+                        加入批量
+                      </label>
+                      <button
+                        @click="enterCharacter(character.path)"
+                        :disabled="busy || enteringCharacterPaths.has(character.path)"
+                        class="rounded-sm border border-navy-800 bg-navy-800 px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
+                      >
+                        {{ enteringCharacterPaths.has(character.path) ? '合同处理中...' : '该角色进入灰区' }}
+                      </button>
+                    </template>
+                    <button
+                      @click="emit('openFile', character.path)"
+                      class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
+                    >
+                      打开档案
+                    </button>
+                    <button
+                      @click="charExpanded[character.path] = !charExpanded[character.path]"
+                      class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
+                    >
+                      {{ charExpanded[character.path] ? '收起' : '展开详情' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="charExpanded[character.path]" class="mt-4 space-y-4">
+                  <section class="rounded-sm border border-paper-300 bg-white p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-600">状态信息</div>
+                      <button
+                        type="button"
+                        @click="charStatusOpen[character.path] = !charStatusOpen[character.path]"
+                        class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 hover:border-navy-700 hover:text-navy-800"
+                      >
+                        {{ charStatusOpen[character.path] ? '收起' : '展开' }}
+                      </button>
+                    </div>
+                    <div v-if="charStatusOpen[character.path]" class="mt-3 space-y-4">
+                      <div v-if="character.currentSituation" class="rounded-sm border border-paper-300 bg-paper-50 p-3 text-sm leading-6 text-paper-800">
+                        {{ character.currentSituation }}
+                      </div>
+
+                      <div>
+                        <div class="font-mono text-[10px] tracking-[0.18em] text-paper-600">血槽</div>
+                        <div class="mt-2 flex flex-wrap gap-1.5" :aria-label="bloodLabel(character)">
+                          <span
+                            v-for="slot in bloodSlots(character)"
+                            :key="slot.key"
+                            class="h-5 w-5 rounded-[2px] border border-paper-950"
+                            :class="slot.state === 'healthy' ? 'bg-crimson-600' : slot.state === 'light' ? 'bg-ochre-500' : 'bg-paper-950'"
+                            :title="slot.state === 'healthy' ? '红：可用血槽' : slot.state === 'light' ? '橙：受损血槽' : '黑：重创血槽'"
+                          ></span>
+                          <span v-if="!bloodSlots(character).length" class="text-sm text-paper-700">未记录血槽</span>
+                        </div>
+                        <div class="mt-2 flex flex-wrap gap-2 text-[11px] leading-5 text-paper-700">
+                          <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-crimson-600"></span>红</span>
+                          <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-ochre-500"></span>橙</span>
+                          <span class="inline-flex items-center gap-1"><span class="h-3 w-3 bg-paper-950"></span>黑</span>
+                          <span>{{ bloodLabel(character) }}</span>
+                        </div>
+                      </div>
+
+                      <div class="grid gap-3 lg:grid-cols-3">
+                        <div class="rounded-sm border border-paper-300 bg-white p-3">
+                          <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">背包 / 随身物品</div>
+                          <div v-if="character.inventory.length" class="mt-2 flex flex-wrap gap-2">
+                            <span v-for="item in character.inventory" :key="item" class="stamp text-paper-800">{{ item }}</span>
+                          </div>
+                          <div v-else class="mt-2 text-sm text-paper-700">未提取到物品。</div>
+                        </div>
+                        <div class="rounded-sm border border-paper-300 bg-white p-3">
+                          <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">安全箱</div>
+                          <div v-if="character.safeBox.length" class="mt-2 grid grid-cols-2 gap-2">
+                            <div
+                              v-for="slot in character.safeBox"
+                              :key="slot.label"
+                              class="rounded-sm border px-2 py-2 text-xs leading-5"
+                              :class="slot.empty ? 'border-paper-300 bg-paper-100 text-paper-600' : 'border-ochre-400 bg-ochre-50 text-paper-900'"
+                            >
+                              <div class="font-mono text-[10px] tracking-[0.12em]">{{ slot.label }}</div>
+                              <div class="mt-1 truncate">{{ slot.empty ? '空' : slot.item }}</div>
+                            </div>
+                          </div>
+                          <div v-else class="mt-2 text-sm text-paper-700">未记录安全箱。</div>
+                        </div>
+                        <div class="rounded-sm border border-paper-300 bg-white p-3">
+                          <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">语义状态栏</div>
+                          <div v-if="character.semanticStatus.length" class="mt-2 space-y-1 text-sm leading-6 text-paper-800">
+                            <div v-for="entry in character.semanticStatus" :key="entry" class="truncate">- {{ entry }}</div>
+                          </div>
+                          <div v-else class="mt-2 text-sm text-paper-700">暂无语义状态。</div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section v-if="characterActions[character.path] && (character.inGame || character.lifecycle === 'active')" class="rounded-sm border border-paper-300 bg-white p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-600">行动输入</div>
+                      <button
+                        type="button"
+                        @click="charActionOpen[character.path] = !charActionOpen[character.path]"
+                        class="rounded-sm border border-paper-300 bg-paper-100 px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 hover:border-navy-700 hover:text-navy-800"
+                      >
+                        {{ charActionOpen[character.path] ? '收起' : '展开' }}
+                      </button>
+                    </div>
+                    <div v-if="charActionOpen[character.path]" class="mt-3 space-y-3">
+                      <label class="space-y-1">
+                        <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">核心意图（一句话即可，同场景可见）</div>
+                        <textarea
+                          v-model="characterActions[character.path].publicAction"
+                          rows="3"
+                          class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6"
+                          :disabled="!selectedActionPaths.includes(character.path)"
+                          placeholder="例：侦察前方道路 / 掩护队友撤离 / 搜索房间。也可以写复杂行动。"
+                        />
+                      </label>
+                      <div class="grid gap-3">
+                        <label class="space-y-1">
+                          <div class="font-mono text-[10px] tracking-[0.18em] text-paper-500">私密意图给 AI DM</div>
+                          <textarea v-model="characterActions[character.path].privateToDm" rows="3" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="只给 AI DM 的真实目的、试探、隐瞒或底线。" />
+                        </label>
+                        <div class="grid gap-3 md:grid-cols-2">
+                          <textarea v-model="characterActions[character.path].longTerm" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="长期目标，例如：找到妹妹的线索。" />
+                          <textarea v-model="characterActions[character.path].triggers" rows="2" class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6" :disabled="!selectedActionPaths.includes(character.path)" placeholder="触发条件，例如：如果职员回避安全箱问题就追问。" />
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              </article>
+            </div>
+
+            <div v-else class="mt-3 rounded-sm border border-dashed border-paper-400 bg-paper-100 p-4 text-sm leading-7 text-paper-800">
+              创建角色后，这里会显示你的角色详情和行动输入。
+            </div>
+          </div>
+
+          <div class="border-t border-paper-300 pt-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-700">其它角色</div>
+                <div class="mt-1 text-xs leading-5 text-paper-600">只显示当前席位可见的角色信息，排序同样会保留。</div>
+              </div>
+              <span class="stamp text-paper-800">{{ otherCharacters.length }} 个可见角色</span>
+            </div>
+
+            <div v-if="otherCharacters.length" class="mt-3 space-y-3">
+              <article
+                v-for="character in otherCharacters"
+                :key="character.path"
+                class="rounded-sm border border-paper-300 bg-white p-3 transition"
+                :class="dragOverPath === character.path ? 'border-crimson-600 bg-crimson-50' : ''"
+                @dragover.prevent="dragOverPath = character.path"
+                @dragleave="dragOverPath = null"
+                @drop.prevent="dropCharacter('others', character.path)"
+              >
+                <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                  <div class="flex min-w-0 items-start gap-2">
+                    <button
+                      type="button"
+                      draggable="true"
+                      class="h-12 w-3 shrink-0 cursor-grab rounded-[1px] active:cursor-grabbing"
+                      :class="dragHandleTone(character, 'others')"
+                      :title="dragHandleTitle(character, 'others')"
+                      :aria-label="dragHandleTitle(character, 'others')"
+                      @dragstart="startCharacterDrag('others', character.path)"
+                      @dragend="finishCharacterDrag"
+                    >
+                      <span class="sr-only">拖动排序</span>
+                    </button>
+                    <div class="min-w-0">
+                      <div class="font-serif text-base font-bold text-paper-950">{{ character.name }}</div>
+                      <div class="mt-1 font-mono text-[10px] tracking-[0.12em] text-paper-700">
+                        {{ character.controller || '未绑定席位' }} · {{ character.location }} · {{ character.sceneId }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+                    <span class="stamp" :class="character.inGame || character.lifecycle === 'active' ? 'text-forest-700' : 'text-paper-700'">
+                      {{ character.inGame || character.lifecycle === 'active' ? '已入局' : '待入局' }}
+                    </span>
+                    <button
+                      @click="emit('openFile', character.path)"
+                      class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
+                    >
+                      打开档案
+                    </button>
+                    <button
+                      @click="charExpanded[character.path] = !charExpanded[character.path]"
+                      class="rounded-sm border border-paper-300 bg-white px-3 py-2 text-center font-mono text-[11px] font-bold tracking-[0.12em] text-paper-900 hover:border-crimson-600 hover:text-crimson-700"
+                    >
+                      {{ charExpanded[character.path] ? '收起' : '展开详情' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="charExpanded[character.path]" class="mt-4 grid gap-3">
+                  <section class="rounded-sm border border-paper-300 bg-paper-100 p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-mono text-[10px] font-bold tracking-[0.18em] text-paper-600">状态信息</div>
+                      <button
+                        type="button"
+                        @click="charStatusOpen[character.path] = !charStatusOpen[character.path]"
+                        class="rounded-sm border border-paper-300 bg-white px-2 py-1 font-mono text-[10px] font-bold tracking-[0.12em] text-paper-800 hover:border-navy-700 hover:text-navy-800"
+                      >
+                        {{ charStatusOpen[character.path] ? '收起' : '展开' }}
+                      </button>
+                    </div>
+                    <div v-if="charStatusOpen[character.path]" class="mt-3 grid gap-3 md:grid-cols-2">
+                      <div v-if="character.currentSituation || character.concept" class="rounded-sm border border-paper-300 bg-white p-3 text-sm leading-6 text-paper-800">
+                        {{ character.currentSituation || character.concept }}
+                      </div>
+                      <div class="rounded-sm border border-paper-300 bg-white p-3">
+                        <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">状态</div>
+                        <div class="mt-2 text-sm leading-6 text-paper-800">{{ bloodLabel(character) }}</div>
+                        <div v-if="character.semanticStatus.length" class="mt-2 space-y-1 text-sm leading-6 text-paper-800">
+                          <div v-for="entry in character.semanticStatus" :key="entry" class="truncate">- {{ entry }}</div>
+                        </div>
+                      </div>
+                      <div class="rounded-sm border border-paper-300 bg-white p-3 md:col-span-2">
+                        <div class="font-mono text-[10px] tracking-[0.16em] text-paper-600">公开物品</div>
+                        <div v-if="character.inventory.length" class="mt-2 flex flex-wrap gap-2">
+                          <span v-for="item in character.inventory" :key="item" class="stamp text-paper-800">{{ item }}</span>
+                        </div>
+                        <div v-else class="mt-2 text-sm text-paper-700">暂无可见物品。</div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              </article>
+            </div>
+
+            <div v-else class="mt-3 rounded-sm border border-dashed border-paper-400 bg-paper-100 p-4 text-sm leading-7 text-paper-800">
+              当前没有其它可见角色。
+            </div>
           </div>
         </div>
       </div>

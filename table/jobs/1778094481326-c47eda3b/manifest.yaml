@@ -1,0 +1,32 @@
+id: 1778094481326-c47eda3b
+kind: contract_onboarding
+title: 进入灰区 / 合同开局 | 支援AI | 2026/5/7 03:08:01
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-06T19:08:01.330Z'
+updatedAt: '2026-05-06T19:13:11.672Z'
+startedAt: '2026-05-06T19:08:01.348Z'
+endedAt: '2026-05-06T19:13:11.672Z'
+createdBy: 支援AI
+participantSeats:
+  - 支援AI
+participantCharacters:
+  - name: 宋砚
+    path: characters/active/支援AI_宋砚.md
+    controller: 支援AI
+    sceneId: 围栏镇据点·登记大厅
+    partyId: 支援AI
+artifacts:
+  manifest: table/jobs/1778094481326-c47eda3b/manifest.yaml
+  packet: table/jobs/1778094481326-c47eda3b/packet.md
+  prompt: table/jobs/1778094481326-c47eda3b/prompt.md
+  rawResult: table/jobs/1778094481326-c47eda3b/result.raw.md
+  parsedResult: table/jobs/1778094481326-c47eda3b/result.parsed.json
+  stdout: table/jobs/1778094481326-c47eda3b/stdout.log
+  stderr: table/jobs/1778094481326-c47eda3b/stderr.log
+  events: table/jobs/1778094481326-c47eda3b/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

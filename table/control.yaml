@@ -1,5 +1,12 @@
 version: 1
 bindings:
+  - characterPath: characters/active/乌鸫.md
+    label: 乌鸫
+    primarySeat: 托管AI
+    dmHosted: false
+    visibleTo:
+      - 托管AI
+    pendingTransfer: null
   - characterPath: characters/active/周岚.md
     label: 周岚
     primarySeat: 习风
@@ -13,6 +20,13 @@ bindings:
     dmHosted: false
     visibleTo:
       - 习风
+    pendingTransfer: null
+  - characterPath: characters/active/支援AI_宋砚.md
+    label: 宋砚
+    primarySeat: 支援AI
+    dmHosted: false
+    visibleTo:
+      - 支援AI
     pendingTransfer: null
   - characterPath: characters/active/林澈.md
     label: 林澈

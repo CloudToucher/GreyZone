@@ -1,0 +1,32 @@
+id: 1778094925565-41004f74
+kind: action
+title: AI DM 行动回合 | 支援AI | 2026/5/7 03:15:25
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-06T19:15:25.577Z'
+updatedAt: '2026-05-06T19:20:56.272Z'
+startedAt: '2026-05-06T19:15:25.608Z'
+endedAt: '2026-05-06T19:20:56.272Z'
+createdBy: 支援AI
+participantSeats:
+  - 支援AI
+participantCharacters:
+  - name: 宋砚
+    path: characters/active/支援AI_宋砚.md
+    controller: 支援AI
+    sceneId: 围栏镇据点·合同中心
+    partyId: 支援AI
+artifacts:
+  manifest: table/jobs/1778094925565-41004f74/manifest.yaml
+  packet: table/jobs/1778094925565-41004f74/packet.md
+  prompt: table/jobs/1778094925565-41004f74/prompt.md
+  rawResult: table/jobs/1778094925565-41004f74/result.raw.md
+  parsedResult: table/jobs/1778094925565-41004f74/result.parsed.json
+  stdout: table/jobs/1778094925565-41004f74/stdout.log
+  stderr: table/jobs/1778094925565-41004f74/stderr.log
+  events: table/jobs/1778094925565-41004f74/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

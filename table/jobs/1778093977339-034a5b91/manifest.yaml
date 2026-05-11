@@ -1,0 +1,27 @@
+id: 1778093977339-034a5b91
+kind: forge
+title: AI 创建角色 | 支援AI | 2026/5/7 02:59:37
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-06T18:59:37.344Z'
+updatedAt: '2026-05-06T19:06:31.988Z'
+startedAt: '2026-05-06T18:59:37.358Z'
+endedAt: '2026-05-06T19:06:31.988Z'
+createdBy: 支援AI
+participantSeats:
+  - 支援AI
+participantCharacters: []
+artifacts:
+  manifest: table/jobs/1778093977339-034a5b91/manifest.yaml
+  packet: table/jobs/1778093977339-034a5b91/packet.md
+  prompt: table/jobs/1778093977339-034a5b91/prompt.md
+  rawResult: table/jobs/1778093977339-034a5b91/result.raw.md
+  parsedResult: table/jobs/1778093977339-034a5b91/result.parsed.json
+  stdout: table/jobs/1778093977339-034a5b91/stdout.log
+  stderr: table/jobs/1778093977339-034a5b91/stderr.log
+  events: table/jobs/1778093977339-034a5b91/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

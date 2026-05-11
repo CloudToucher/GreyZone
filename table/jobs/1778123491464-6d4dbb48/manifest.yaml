@@ -1,0 +1,53 @@
+id: 1778123491464-6d4dbb48
+kind: action
+title: AI DM 行动回合 | 习风 | 2026/5/7 11:11:31
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-07T03:11:31.464Z'
+updatedAt: '2026-05-07T03:20:51.913Z'
+startedAt: '2026-05-07T03:11:31.489Z'
+endedAt: '2026-05-07T03:20:51.913Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+  - 支援AI
+participantCharacters:
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: 左铺卧姿休整
+    partyId: 周岚
+  - name: 影子
+    path: characters/active/影子.md
+    controller: 习风
+    sceneId: 围栏镇基地_营房
+    partyId: 影子
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: 左铺卧姿休整
+    partyId: 林澈
+  - name: 胡明
+    path: characters/active/胡明.md
+    controller: 习风
+    sceneId: 围栏镇基地_营房
+    partyId: 影子
+  - name: 宋砚
+    path: characters/active/支援AI_宋砚.md
+    controller: 支援AI
+    sceneId: 左铺卧姿休整
+    partyId: 支援AI
+artifacts:
+  manifest: table/jobs/1778123491464-6d4dbb48/manifest.yaml
+  packet: table/jobs/1778123491464-6d4dbb48/packet.md
+  prompt: table/jobs/1778123491464-6d4dbb48/prompt.md
+  rawResult: table/jobs/1778123491464-6d4dbb48/result.raw.md
+  parsedResult: table/jobs/1778123491464-6d4dbb48/result.parsed.json
+  stdout: table/jobs/1778123491464-6d4dbb48/stdout.log
+  stderr: table/jobs/1778123491464-6d4dbb48/stderr.log
+  events: table/jobs/1778123491464-6d4dbb48/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

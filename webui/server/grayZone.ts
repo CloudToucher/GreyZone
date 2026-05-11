@@ -171,12 +171,10 @@ function extractSafeBox(body: string) {
 }
 
 function extractSemanticStatus(body: string, currentSituation: string) {
-  const status = extractAnySection(body, ['状态与异常', '当前处境', '角色笔记'])
-  const entries = [
-    ...bulletItems(currentSituation, 3),
-    ...bulletItems(status, 6),
-  ]
-  return Array.from(new Set(entries)).slice(0, 7)
+  const status = extractAnySection(body, ['状态与异常', '角色笔记'])
+  const explicit = bulletItems(status, 6)
+  if (explicit.length) return Array.from(new Set(explicit)).slice(0, 7)
+  return Array.from(new Set(bulletItems(currentSituation, 3))).slice(0, 7)
 }
 
 export async function readCharacterSummary(absPath: string, relPath: string): Promise<CharacterSummary | null> {

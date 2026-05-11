@@ -1,0 +1,43 @@
+id: 1778095390335-02d9d877
+kind: action
+title: AI DM 行动回合 | 习风 | 2026/5/7 03:23:10
+status: done
+phase: finished
+worldWrite: true
+createdAt: '2026-05-06T19:23:10.335Z'
+updatedAt: '2026-05-07T02:39:33.313Z'
+startedAt: '2026-05-06T19:23:10.350Z'
+endedAt: '2026-05-06T19:33:10.374Z'
+createdBy: 习风
+participantSeats:
+  - 习风
+  - 支援AI
+participantCharacters:
+  - name: 林澈
+    path: characters/active/林澈.md
+    controller: 习风
+    sceneId: 南门岗亭内侧
+    partyId: 林澈
+  - name: 周岚
+    path: characters/active/周岚.md
+    controller: 习风
+    sceneId: 南门岗亭内侧
+    partyId: 周岚
+  - name: 宋砚
+    path: characters/active/支援AI_宋砚.md
+    controller: 支援AI
+    sceneId: 南门岗亭内侧
+    partyId: 支援AI
+artifacts:
+  manifest: table/jobs/1778095390335-02d9d877/manifest.yaml
+  packet: table/jobs/1778095390335-02d9d877/packet.md
+  prompt: table/jobs/1778095390335-02d9d877/prompt.md
+  rawResult: table/jobs/1778095390335-02d9d877/result.raw.md
+  parsedResult: table/jobs/1778095390335-02d9d877/result.parsed.json
+  stdout: table/jobs/1778095390335-02d9d877/stdout.log
+  stderr: table/jobs/1778095390335-02d9d877/stderr.log
+  events: table/jobs/1778095390335-02d9d877/events.ndjson
+error: null
+model: deepseek/deepseek-v4-pro
+exitCode: 0
+parserWarnings: []

@@ -308,7 +308,7 @@ function createEnterPacket(args: {
     '- 输出可以包含公共合同大厅场景，也可以给每个角色单独的下一步行动建议；需要私密信息时使用 self:<角色名或路径> 标签。',
     '',
     '## 当前共享看板',
-    args.sharedBoard || '(empty)',
+    compactSharedBoardForPacket(args.sharedBoard) || '(empty)',
     '',
     '## 本次进入灰区的角色（同一批次）',
     ...args.characters.flatMap(characterLine),
@@ -346,7 +346,7 @@ function createActionPacket(args: {
     '- contract_rule: 如果角色 frontmatter 显示 contractStatus: signed / inGame: true / lifecycle: active，该角色已经签约入局。不要再要求他签约、预登记或领取开局合同。',
     '',
     '## 当前共享看板',
-    args.sharedBoard || '(empty)',
+    compactSharedBoardForPacket(args.sharedBoard) || '(empty)',
     '',
     '## 本轮角色行动卡',
     ...args.actions.flatMap((action) => [
@@ -409,6 +409,7 @@ function createForgePacket(args: {
     '',
     `- player_seat: ${args.viewer.seatName}`,
     `- character_output_path: ${args.outputPath}`,
+    `- player_file_hint: ${value('fileHint') || '(not provided)'}`,
     `- result_raw_path: ${args.resultPath}`,
     '',
     '## 必须写入角色卡',
@@ -567,6 +568,42 @@ function compactBoardLines(text: string, limit = 10) {
     .join('\n')
 }
 
+function compactSharedBoardForPacket(text: string, maxChars = 14000) {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length <= maxChars) return trimmed
+  const marker = '\n## AI 回合记录'
+  const parts = trimmed.split(marker)
+  if (parts.length <= 1) return trimmed.slice(0, maxChars)
+
+  const top = parts.shift()?.trim() || ''
+  const records = parts
+    .map((part) => `${marker.trimStart()}${part}`)
+    .slice(-5)
+    .map((record) => {
+      const title = record.match(/^##\s+(.+)$/m)?.[0] || '## AI 回合记录'
+      const changes = extractMarkdownSection(record, ['已确认变化', '状态变化'])
+      const next = extractMarkdownSection(record, ['下一步方向', '可以做些什么', '下一步'])
+      return [
+        title,
+        '',
+        '### 已确认变化',
+        compactBoardLines(changes || record, 10) || '- 暂无摘要。',
+        '',
+        '### 下一步方向',
+        compactBoardLines(next, 4) || '- 等待玩家选择下一步行动。',
+      ].join('\n')
+    })
+
+  const combined = [
+    top,
+    '',
+    '## 最近回合记录（WebUI 为本次 Agent job 压缩）',
+    '',
+    ...records,
+  ].join('\n')
+  return combined.length <= maxChars ? combined : combined.slice(0, maxChars)
+}
+
 function extractActionPublicSections(raw: string, parsed: ParsedResult) {
   const publicContent = parsed.blocks
     .filter((block) => block.visibility === 'public')
@@ -612,6 +649,13 @@ async function appendActionResultToSharedBoard(root: string, manifest: AgentJobM
 function extractLocationFromChanges(changes: string) {
   const line = changes.split(/\r?\n/).find((item) => /位置|地点|所在地/.test(item))
   if (!line) return ''
+  const explicitCurrent = line.match(/(?:当前所在|当前位置|当前位于|目前位于|现在位于|当前处于|目前处于)[:：]?\s*([^。；;\n]+)/)
+  if (explicitCurrent?.[1]) {
+    return explicitCurrent[1]
+      .replace(/\*\*/g, '')
+      .replace(/^[:：\s]+/, '')
+      .trim()
+  }
   const currentMatch = line.match(/(?:两人|队伍|小队|他们|她们|林澈和周岚|林澈与周岚)?(?:现已|现在|目前|当前|实际情况为)[^，。；;\n]*?(?:在|位于|处于)([^，。；;\n]+(?:（[^）]+）)?)/)
   if (currentMatch?.[1]) {
     return currentMatch[1]
@@ -636,7 +680,7 @@ function extractEnergyFromChanges(changes: string, characterName: string) {
 }
 
 async function appendActionResultToCharacterCards(root: string, manifest: AgentJobManifest, parsed: ParsedResult) {
-  if (manifest.kind !== 'action') return []
+  if (manifest.kind !== 'action' && manifest.kind !== 'contract_onboarding') return []
   const raw = await fs.readFile(abs(root, manifest.artifacts.rawResult), 'utf8').catch(() => '')
   const { changes, next } = extractActionPublicSections(raw, parsed)
   if (!changes && !next) return []
@@ -671,7 +715,7 @@ async function appendActionResultToCharacterCards(root: string, manifest: AgentJ
       '',
       `## AI 回合记录（WebUI 兜底） ${manifest.endedAt || nowIso()} ${manifest.id}`,
       '',
-      '> 这是 WebUI 在行动 job 完成后写入的玩家可见摘要，用于防止角色卡状态落后于最新 DM 结果；复杂装备与线索仍以本轮“已确认变化”为准。',
+      '> 这是 WebUI 在 job 完成后写入的玩家可见摘要，用于防止角色卡状态落后于最新 DM 结果；复杂装备与线索仍以本轮“已确认变化”为准。',
       '',
       '### 已确认变化',
       changes || '- 暂无明确变化。',
@@ -847,7 +891,8 @@ export async function enqueueEnterJobs(root: string, viewer: ViewerSession, char
 export async function enqueueForgeJob(root: string, viewer: ViewerSession, forge: Record<string, unknown>) {
   await ensureTableState(root)
   const rawName = typeof forge.name === 'string' && forge.name.trim() ? forge.name.trim() : viewer.seatName
-  const fileStem = rawName.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').slice(0, 64) || 'new_character'
+  const rawFileHint = typeof forge.fileHint === 'string' && forge.fileHint.trim() ? forge.fileHint.trim() : rawName
+  const fileStem = rawFileHint.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').replace(/\.md$/i, '').slice(0, 64) || 'new_character'
   const outputPath = `characters/active/${fileStem}.md`
   const manifest = await createManifest({
     root,
@@ -887,18 +932,33 @@ export async function enqueueActionJob(root: string, viewer: ViewerSession, acti
   const owned = await controlledCharacters(root, viewer)
   const activeOwned = owned.filter(isCharacterInGame)
   const fallbackIntent = await loadIntentForSeat(root, viewer.seatName).catch(() => null)
-  const requestedActions = actions?.length ? actions : activeOwned.map((character) => ({
-    characterPath: character.path,
-    characterName: character.name,
-    playerSeat: viewer.seatName,
-    publicAction: fallbackIntent?.sections.public || '',
-    privateToDm: fallbackIntent?.sections.privateToDm || '',
-    longTerm: fallbackIntent?.sections.longTerm || '',
-    triggers: fallbackIntent?.sections.triggers || '',
-    aiHosted: false,
-  }))
+  let requestedActions: CharacterAction[]
+  if (actions?.length) {
+    requestedActions = actions
+  } else {
+    if (activeOwned.length !== 1) {
+      throw new Error('Multiple active characters require explicit selected character actions.')
+    }
+    const character = activeOwned[0]
+    requestedActions = [{
+      characterPath: character.path,
+      characterName: character.name,
+      playerSeat: viewer.seatName,
+      publicAction: fallbackIntent?.sections.public || '',
+      privateToDm: fallbackIntent?.sections.privateToDm || '',
+      longTerm: fallbackIntent?.sections.longTerm || '',
+      triggers: fallbackIntent?.sections.triggers || '',
+      aiHosted: false,
+    }]
+  }
   const activeOwnedPaths = new Set(activeOwned.map((character) => character.path))
-  const ownedActions = requestedActions.filter((action) => activeOwnedPaths.has(action.characterPath))
+  const ownedActions: CharacterAction[] = []
+  const seenOwnedPaths = new Set<string>()
+  for (const action of requestedActions) {
+    if (!activeOwnedPaths.has(action.characterPath) || seenOwnedPaths.has(action.characterPath)) continue
+    ownedActions.push(action)
+    seenOwnedPaths.add(action.characterPath)
+  }
   if (!ownedActions.length) throw new Error('No signed/in-game character actions to process. Use Enter Grey Zone on a character first.')
   const actionSceneIds = new Set(
     ownedActions
@@ -917,9 +977,7 @@ export async function enqueueActionJob(root: string, viewer: ViewerSession, acti
     const seat = seats.seats.find((entry) => entry.name === seatName)
     const intent = await loadIntentForSeat(root, seatName).catch(() => null)
     if (!intent) continue
-    const hasDraft = [intent.sections.public, intent.sections.privateToDm, intent.sections.longTerm, intent.sections.triggers]
-      .some((section) => section.trim().length > 0)
-    if (!(seat?.status === 'ready' || seat?.status === 'submitted' || hasDraft)) continue
+    if (!(seat?.status === 'ready' || seat?.status === 'submitted')) continue
     sceneMateActions.push({
       characterPath: character.path,
       characterName: character.name,
