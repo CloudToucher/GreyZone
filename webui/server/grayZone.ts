@@ -15,6 +15,10 @@ export interface CharacterSummary {
   lifecycle: 'pending_contract' | 'active'
   contractStatus: string
   inGame: boolean
+  aiRole?: string
+  aiHosted?: boolean
+  temporary?: boolean
+  requestedBy?: string
   inventory: string[]
   safeBox: Array<{ label: string; item: string; empty: boolean }>
   semanticStatus: string[]
@@ -237,6 +241,8 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
       || 'pending'
     const lifecycleRaw = frontmatterString(frontmatter, ['lifecycle', 'gameLifecycle', 'game_lifecycle'])
     const inGame = frontmatter?.inGame === true || frontmatter?.in_game === true || /^(signed|active|joined|已签约|入局)$/i.test(contractStatus)
+    const aiRole = frontmatterString(frontmatter, ['aiRole', 'ai_role', 'AI定位'])
+    const requestedBy = frontmatterString(frontmatter, ['requestedBy', 'requested_by', '申请者'])
 
     return {
       path: relPath,
@@ -256,6 +262,10 @@ export async function readCharacterSummary(absPath: string, relPath: string): Pr
       lifecycle: inGame || lifecycleRaw === 'active' ? 'active' : 'pending_contract',
       contractStatus,
       inGame,
+      aiRole: aiRole || undefined,
+      aiHosted: frontmatter?.aiHosted === true || frontmatter?.ai_hosted === true,
+      temporary: frontmatter?.temporary === true,
+      requestedBy: requestedBy || undefined,
       inventory: extractInventory(body),
       safeBox: extractSafeBox(body),
       semanticStatus: extractSemanticStatus(body, currentSituation),

@@ -28,6 +28,7 @@ import {
   buildJobQueueItems,
   buildAgentRunSummaries,
   enqueueActionJob,
+  enqueueAiCompanionJob,
   enqueueAssistantJob,
   enqueueEnterJobs,
   enqueueForgeJob,
@@ -256,6 +257,19 @@ export function filesMiddleware(workspaceRoot: string) {
         const job = await enqueueForgeJob(root, viewer, body?.forge || {})
         emitSnapshotRefresh('job-forge-created')
         return sendJson(res, 200, { jobId: job.id, job })
+      }
+
+      if (req.method === 'POST' && route === '/jobs/ai-companion') {
+        const viewer = await requireViewer(root, req, res)
+        if (!viewer) return
+        const body = await readJsonBody(req)
+        try {
+          const job = await enqueueAiCompanionJob(root, viewer, body?.companion || body || {})
+          emitSnapshotRefresh('job-ai-companion-created')
+          return sendJson(res, 200, { jobId: job.id, job })
+        } catch (error: any) {
+          return sendJson(res, 400, { error: error?.message || 'ai companion job failed' })
+        }
       }
 
       if (req.method === 'POST' && route === '/jobs/action') {

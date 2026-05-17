@@ -36,3 +36,11 @@ seats:
     dmEnabled: false
     tokenHashes:
       - f09704ef8074fe584a8cbb073115a4740382129039ee56070df63a353560f857
+  - name: 协同DM
+    role: player
+    occupied: false
+    tokenHash: null
+    status: idle
+    online: false
+    lastSeenAt: null
+    dmEnabled: false

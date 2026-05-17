@@ -8,20 +8,31 @@ import { emitSnapshotRefresh } from './runtime'
 import {
   ensureTableState,
   finalizeSeatsAfterRound,
+  AI_COMPANION_SEAT,
   loadSeats,
   loadControl,
+  saveControl,
   loadIntentForSeat,
   markRoomIdle,
   markRoomRunning,
   readAllCharacterSummaries,
   reconcileTableFromCharacters,
+  sanitizeFileStem,
   type CharacterSummary,
   type ViewerSession,
 } from './core'
 
-export type AgentJobKind = 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+export type AgentJobKind = 'contract_onboarding' | 'action' | 'forge' | 'assistant' | 'ai_companion'
 export type AgentJobStatus = 'waiting' | 'running' | 'validating' | 'done' | 'error'
 export type AgentJobPhase = 'queued' | 'preparing' | 'agent-running' | 'parsing' | 'post-processing' | 'finished'
+export type AiCompanionPurpose = 'support' | 'atmosphere' | 'plot' | 'combat' | 'scout' | 'knowledge'
+
+export interface AiCompanionRequestPayload {
+  anchorCharacterPath: string
+  purpose: AiCompanionPurpose
+  concept: string
+  boundaries?: string
+}
 
 export interface CharacterAction {
   characterPath: string
@@ -218,6 +229,7 @@ function summarizeJobTitle(kind: AgentJobKind, viewer: ViewerSession) {
     action: 'AI DM 行动回合',
     forge: 'AI 创建角色',
     assistant: '规则助手',
+    ai_companion: '协同DM临时角色',
   }
   return `${label[kind]} | ${viewer.seatName} | ${new Date().toLocaleString('zh-CN', { hour12: false })}`
 }
@@ -234,12 +246,16 @@ function characterLine(character: CharacterSummary) {
     `- sceneId: ${character.sceneId}`,
     `- partyId: ${character.partyId}`,
     `- visibilityScope: ${character.visibilityScope}`,
+    character.aiHosted ? `- aiHosted: true` : '',
+    character.temporary ? `- temporary: true` : '',
+    character.aiRole ? `- aiRole: ${character.aiRole}` : '',
+    character.requestedBy ? `- requestedBy: ${character.requestedBy}` : '',
     `- status: ${character.semanticStatus.join('；') || '(empty)'}`,
     `- inventory: ${character.inventory.join('；') || '(empty)'}`,
     '',
     character.currentSituation || '(no current situation extracted)',
     '',
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 function tagProtocol(resultPath: string) {
@@ -332,6 +348,7 @@ function createActionPacket(args: {
     && !actionPaths.has(character.path)
     && sceneIds.has(character.sceneId),
   )
+  const aiCompanionActions = args.actions.filter((action) => action.aiHosted || action.playerSeat === AI_COMPANION_SEAT)
   return [
     '# Agent Job Packet: action',
     '',
@@ -341,6 +358,7 @@ function createActionPacket(args: {
     `- result_raw_path: ${args.resultPath}`,
     `- selected_action_count: ${args.actions.length}`,
     `- selected_characters: ${args.actions.map((action) => action.characterName).join(', ') || '(none)'}`,
+    `- ai_companion_characters: ${aiCompanionActions.map((action) => action.characterName).join(', ') || '(none)'}`,
     `- same_seat_not_selected: ${passiveSameSeat.map((character) => character.name).join(', ') || '(none)'}`,
     '- identity_rule: 本轮角色行动卡中的 name + characterPath 是唯一身份来源。不要把这些角色别名为共享看板里的其他旧角色；共享看板或角色卡正文与 frontmatter 冲突时，以 frontmatter 和本轮行动卡为准。',
     '- contract_rule: 如果角色 frontmatter 显示 contractStatus: signed / inGame: true / lifecycle: active，该角色已经签约入局。不要再要求他签约、预登记或领取开局合同。',
@@ -378,6 +396,8 @@ function createActionPacket(args: {
     '- 禁止把本轮角色写成“林澈（影子）”“周岚（胡明）”这类旧角色别名；除非角色卡明确写了该别名，否则只使用本轮行动卡中的角色名。',
     '- 如果角色正文“当前处境”还写着等待签约、预登记、临时身份牌，但 frontmatter 已签约入局，必须把正文视为过期状态并在结果中自然修正。',
     '- 若有两个或更多主动角色，必须写成同一段协同场景：明确谁掩护谁、谁发现线索、谁承担风险、谁消耗资源。不要输出两份互不相干的独立报告。',
+    '- 对 aiHosted: true 或 playerSeat: 协同DM 的角色，必须先分析其本轮职责：活跃气氛、推进剧情、战术支援、侦察补位、知识解释或线索补位之一；然后用保守、辅助、低抢戏的行动执行。不得替玩家做重大路线选择，不得抢走玩家角色的关键发现或击杀高光。',
+    '- 协同DM角色要让玩家体验更丰富：可以递话题、补信息、提醒风险、制造可回应的角色互动，但不能把场景变成该角色独白。',
     '- 休整充分应降低风险或恢复资源；急着出发应更快但提高暴露、遗漏或资源消耗风险；硬冲、绕行、交涉、撤离应产生不同后果。',
     '- 如果玩家行动明确写出“硬冲、开火、清除威胁、战斗测试、被堵就打、必须交火”等战斗意图，除非现场完全没有敌对目标，否则必须结算至少一个真实战斗节拍（攻击/闪避/压制/受伤/弹药或装备消耗之一），不要连续把所有战斗风险化解成对峙或无人开火。',
     '- 结果必须包含以下玩家可读标题：## DM 回复、## 已确认变化、## 下一步方向。',
@@ -434,6 +454,67 @@ function createForgePacket(args: {
     '- characters/templates/角色卡模板.md',
     '- characters/templates/角色生成指南.md',
     '- table/shared_board.md',
+    '',
+    tagProtocol(args.resultPath),
+  ].join('\n')
+}
+
+const COMPANION_PURPOSE_LABELS: Record<AiCompanionPurpose, string> = {
+  support: '支援协作',
+  atmosphere: '活跃气氛',
+  plot: '推进剧情',
+  combat: '战术补位',
+  scout: '侦察斥候',
+  knowledge: '知识解释',
+}
+
+function createAiCompanionPacket(args: {
+  viewer: ViewerSession
+  payload: AiCompanionRequestPayload
+  anchor: CharacterSummary
+  sharedBoard: string
+  outputPath: string
+  resultPath: string
+}) {
+  const purposeLabel = COMPANION_PURPOSE_LABELS[args.payload.purpose] || args.payload.purpose
+  return [
+    '# Agent Job Packet: ai_companion',
+    '',
+    '你是 AI DM。WebUI 收到玩家申请，需要你生成一个归属于虚拟玩家席位“协同DM”的临时 AI 托管角色。',
+    '',
+    `- requested_by: ${args.viewer.seatName}`,
+    `- virtual_player_seat: ${AI_COMPANION_SEAT}`,
+    `- anchor_character: ${args.anchor.name}`,
+    `- anchor_character_path: ${args.anchor.path}`,
+    `- purpose: ${args.payload.purpose} / ${purposeLabel}`,
+    `- character_output_path: ${args.outputPath}`,
+    `- result_raw_path: ${args.resultPath}`,
+    '',
+    '## 必须写入角色卡',
+    `使用 Write 工具写入 \`${args.outputPath}\`。`,
+    'frontmatter 必须包含：name, controller, level, xp, blood, energy, attributes, location, sceneId, partyId, visibilityScope, contractStatus, inGame, lifecycle, aiHosted, temporary, requestedBy, aiRole。',
+    `controller 必须是 ${AI_COMPANION_SEAT}。`,
+    'aiHosted 必须是 true；temporary 必须是 true；requestedBy 必须是提出申请的玩家席位。',
+    '该角色是临时补位角色，必须直接加入锚定角色当前 sceneId / partyId / location，并且 contractStatus: signed, inGame: true, lifecycle: active。',
+    '角色强度必须低于或等于普通玩家角色，不得替玩家成为主角；核心职责是让探索和协作更顺畅。',
+    '',
+    '## 玩家申请',
+    `- 一句话需求: ${args.payload.concept.trim()}`,
+    `- 用途定位: ${purposeLabel}`,
+    `- 内容边界/备注: ${args.payload.boundaries?.trim() || '(none)'}`,
+    '',
+    '## 锚定角色当前状态',
+    characterLine(args.anchor),
+    '',
+    '## 当前共享看板',
+    compactSharedBoardForPacket(args.sharedBoard) || '(empty)',
+    '',
+    '## 角色设计要求',
+    '- 名字要像真实角色，不要叫“AI助手”“工具人”“NPC”。',
+    '- 明确写出“协同职责”：活跃气氛、推进剧情、战术支援、侦察补位、知识解释或线索补位中的主次分工。',
+    '- 当前处境必须解释他/她为什么能在当前场景自然加入锚定角色所在小队。',
+    '- 下一步方向要能让玩家马上与其协作。',
+    '- 结果用 public 标签告知玩家角色已加入；隐藏的 DM 设计钩子用 dm-only 标签。',
     '',
     tagProtocol(args.resultPath),
   ].join('\n')
@@ -765,6 +846,56 @@ async function finalizeContractCharacters(root: string, characters: AgentJobMani
   await reconcileTableFromCharacters(root)
 }
 
+async function finalizeAiCompanionCharacter(root: string, manifest: AgentJobManifest) {
+  const outputPath = manifest.artifacts.character
+  if (!outputPath) {
+    await reconcileTableFromCharacters(root)
+    return
+  }
+
+  const raw = await fs.readFile(abs(root, outputPath), 'utf8').catch(() => null)
+  if (raw != null) {
+    const { frontmatter, body } = splitMarkdownFrontmatter(raw)
+    const next: Record<string, unknown> = {
+      ...frontmatter,
+      controller: AI_COMPANION_SEAT,
+      aiHosted: true,
+      temporary: true,
+      requestedBy: manifest.createdBy,
+      contractStatus: 'signed',
+      inGame: true,
+      lifecycle: 'active',
+    }
+    if (!next.aiRole) next.aiRole = 'support'
+    await fs.writeFile(abs(root, outputPath), `---\n${yaml.dump(next, { lineWidth: 120, noRefs: true, sortKeys: false })}---\n\n${body}`, 'utf8')
+  }
+
+  await reconcileTableFromCharacters(root)
+
+  const characters = await readAllCharacterSummaries(root)
+  const generated = characters.find((character) => character.path === outputPath)
+  if (!generated) return
+
+  const control = await loadControl(root)
+  const binding = control.bindings.find((entry) => entry.characterPath === outputPath)
+  if (!binding) return
+
+  const sameSceneSeats = characters
+    .filter((character) => character.sceneId === generated.sceneId && character.controller && character.controller !== AI_COMPANION_SEAT)
+    .map((character) => character.controller as string)
+
+  binding.primarySeat = AI_COMPANION_SEAT
+  binding.dmHosted = false
+  binding.visibleTo = Array.from(new Set([
+    ...(binding.visibleTo || []),
+    AI_COMPANION_SEAT,
+    manifest.createdBy,
+    ...sameSceneSeats,
+  ]))
+  binding.pendingTransfer = null
+  await saveControl(root, control)
+}
+
 async function createManifest(args: {
   root: string
   viewer: ViewerSession
@@ -908,6 +1039,44 @@ export async function enqueueForgeJob(root: string, viewer: ViewerSession, forge
   return manifest
 }
 
+export async function enqueueAiCompanionJob(root: string, viewer: ViewerSession, payload: AiCompanionRequestPayload) {
+  await ensureTableState(root)
+  const concept = payload.concept?.trim()
+  if (!concept) throw new Error('concept is required')
+  const purpose = payload.purpose || 'support'
+  if (!Object.prototype.hasOwnProperty.call(COMPANION_PURPOSE_LABELS, purpose)) throw new Error('invalid companion purpose')
+
+  const owned = await controlledCharacters(root, viewer)
+  const anchor = owned.find((character) => character.path === payload.anchorCharacterPath)
+  if (!anchor) throw new Error(`Anchor character is not controlled by this player: ${payload.anchorCharacterPath}`)
+  if (!isCharacterInGame(anchor)) throw new Error('Anchor character must be signed/in-game before requesting a companion.')
+
+  const fileStem = sanitizeFileStem(`${AI_COMPANION_SEAT}_${COMPANION_PURPOSE_LABELS[purpose]}_${Date.now().toString(36)}`)
+  const outputPath = `characters/active/${fileStem}.md`
+  const manifest = await createManifest({
+    root,
+    viewer,
+    kind: 'ai_companion',
+    title: `协同DM临时角色 | ${COMPANION_PURPOSE_LABELS[purpose]} | ${viewer.seatName} | ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+    worldWrite: true,
+    participantSeats: [viewer.seatName, AI_COMPANION_SEAT],
+    participantCharacters: participantChars([anchor]),
+  })
+  manifest.artifacts.character = outputPath
+  await writeManifest(root, manifest)
+  const packet = createAiCompanionPacket({
+    viewer,
+    payload: { ...payload, purpose },
+    anchor,
+    sharedBoard: await readSharedBoardText(root),
+    outputPath,
+    resultPath: manifest.artifacts.rawResult,
+  })
+  await writePacketAndPrompt(root, manifest, packet)
+  schedulePump(root)
+  return manifest
+}
+
 export async function enqueueAssistantJob(root: string, viewer: ViewerSession, question: string, charSummary?: string) {
   await ensureTableState(root)
   const manifest = await createManifest({
@@ -973,6 +1142,20 @@ export async function enqueueActionJob(root: string, viewer: ViewerSession, acti
   for (const character of activeSceneMates) {
     const binding = control.bindings.find((entry) => entry.characterPath === character.path)
     const seatName = binding?.primarySeat || character.controller
+    if (seatName === AI_COMPANION_SEAT || character.aiHosted) {
+      sceneMateActions.push({
+        characterPath: character.path,
+        characterName: character.name,
+        playerSeat: AI_COMPANION_SEAT,
+        publicAction: `以“${character.aiRole || '支援协作'}”定位自动补位：观察当前局势，主动提供低抢戏协作、风险提醒或推进卡住的线索，不替玩家做重大路线选择。`,
+        privateToDm: '协同DM托管角色：优先活跃互动和补位，保留玩家角色的关键发现、决策和高光。',
+        longTerm: '维持临时同伴身份，帮助当前小队探索和协作更顺畅。',
+        triggers: '当场面停滞、玩家缺少信息、队友受压或需要气氛互动时介入；否则保持辅助与观察。',
+        aiHosted: true,
+      })
+      seenActionPaths.add(character.path)
+      continue
+    }
     if (!seatName || seatName === viewer.seatName) continue
     const seat = seats.seats.find((entry) => entry.name === seatName)
     const intent = await loadIntentForSeat(root, seatName).catch(() => null)
@@ -1193,6 +1376,7 @@ async function finishJobFromRaw(root: string, manifest: AgentJobManifest, code: 
   await writeManifest(root, manifest)
   if (!error && manifest.kind === 'forge') await reconcileTableFromCharacters(root)
   if (!error && manifest.kind === 'contract_onboarding') await finalizeContractCharacters(root, manifest.participantCharacters)
+  if (!error && manifest.kind === 'ai_companion') await finalizeAiCompanionCharacter(root, manifest)
   if (!error && manifest.kind === 'action') await finalizeSeatsAfterRound(root, manifest.participantSeats)
   if (manifest.worldWrite) await markRoomIdle(root)
   manifest.phase = 'finished'
@@ -1233,6 +1417,7 @@ export async function reconcileStuckJobs(root: string) {
     await appendEvent(root, job.id, { type: 'reconcile', status: 'done', reason: 'raw-result-present' })
     if (job.kind === 'forge') await reconcileTableFromCharacters(root)
     if (job.kind === 'contract_onboarding') await finalizeContractCharacters(root, job.participantCharacters)
+    if (job.kind === 'ai_companion') await finalizeAiCompanionCharacter(root, job)
     if (job.kind === 'action') await finalizeSeatsAfterRound(root, job.participantSeats)
     if (job.worldWrite) releasedWorldLock = true
   }
@@ -1315,7 +1500,7 @@ export async function buildJobQueueItems(root: string) {
     const run = runs.find((entry) => entry.id === job.id)
     return {
     id: job.id,
-    kind: job.kind === 'forge' ? 'forge' as const : 'action' as const,
+    kind: job.kind === 'forge' ? 'forge' as const : job.kind === 'ai_companion' ? 'ai_companion' as const : 'action' as const,
     status: run?.status === 'stale'
       ? 'error' as const
       : job.status === 'waiting' ? 'waiting' as const : job.status === 'validating' ? 'running' as const : job.status,
@@ -1343,7 +1528,7 @@ export async function buildJobArchives(root: string) {
   const jobs = await listJobs(root, 30)
   return jobs.map((job) => ({
     id: job.id,
-    kind: job.kind === 'forge' ? 'forge' as const : 'action' as const,
+    kind: job.kind === 'forge' ? 'forge' as const : job.kind === 'ai_companion' ? 'ai_companion' as const : 'action' as const,
     packetPath: job.artifacts.packet,
     resultPath: job.artifacts.rawResult,
     updatedAt: job.endedAt || job.updatedAt,
@@ -1359,6 +1544,7 @@ function agentName(kind: AgentJobKind) {
   if (kind === 'contract_onboarding') return 'AI DM / 合同开局'
   if (kind === 'action') return 'AI DM / 行动裁决'
   if (kind === 'forge') return 'Forge Agent / 创建角色'
+  if (kind === 'ai_companion') return 'AI DM / 协同角色'
   return 'Assistant Agent / 规则助手'
 }
 

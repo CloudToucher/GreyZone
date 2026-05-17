@@ -21,10 +21,12 @@ import {
   releaseSeatSession,
   respondToTransfer,
   runActionJob,
+  runAiCompanionJob,
   runForgeJob,
   runRound,
   saveMyIntent,
   type CharacterAction,
+  type AiCompanionRequestPayload,
   type FilePayload,
   type OpencodeProbeResult,
   type RoomSnapshot,
@@ -280,6 +282,29 @@ async function onRunForge(payload: any) {
     const msg = err?.message || String(err)
     error.value = msg
     pushProgramLog('error', '创建角色失败', msg)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onRunAiCompanion(payload: AiCompanionRequestPayload) {
+  if (!session.value) return
+  busy.value = true
+  error.value = null
+  try {
+    let result
+    try {
+      result = await runAiCompanionJob(session.value, payload)
+    } catch (err: any) {
+      if (!/invalid session/i.test(err?.message || String(err)) || !(await recoverCurrentSession('ai companion invalid session')) || !session.value) throw err
+      result = await runAiCompanionJob(session.value, payload)
+    }
+    pushProgramLog('ok', '已提交协同DM临时角色申请', result.jobId)
+    await refresh()
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    error.value = msg
+    pushProgramLog('error', '申请协同DM角色失败', msg)
   } finally {
     busy.value = false
   }
@@ -544,6 +569,7 @@ onBeforeUnmount(() => {
             @submit-character-actions="submitCharacterActions"
             @respond-transfer="onRespondTransfer"
             @run-forge="onRunForge"
+            @run-ai-companion="onRunAiCompanion"
             @open-file="openFile"
             @enter-grey-zone="onEnterGreyZone"
           />

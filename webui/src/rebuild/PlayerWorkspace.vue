@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { CharacterAction, CharacterSummary, ForgePayload, IntentSections, RoomSnapshot, SessionCredentials, VisibleRoundState, SceneReadinessResult } from '@/lib/api'
+import type { AiCompanionPurpose, AiCompanionRequestPayload, CharacterAction, CharacterSummary, ForgePayload, IntentSections, RoomSnapshot, SessionCredentials, VisibleRoundState, SceneReadinessResult } from '@/lib/api'
 import { askAssistant, fetchSceneReadiness } from '@/lib/api'
 import RenderedMarkdown from './RenderedMarkdown.vue'
 
@@ -23,6 +23,7 @@ const emit = defineEmits<{
   submitCharacterActions: [actions: CharacterAction[]]
   respondTransfer: [characterPath: string, accept: boolean]
   runForge: [payload: ForgePayload]
+  runAiCompanion: [payload: AiCompanionRequestPayload]
   openFile: [path: string]
   enterGreyZone: [characterPaths: string[]]
 }>()
@@ -43,6 +44,21 @@ const forge = reactive<ForgePayload>({
 })
 
 const forgeOpen = ref(false)
+const companionOpen = ref(false)
+const companionPurpose = ref<AiCompanionPurpose>('support')
+const companionConcept = ref('')
+const companionBoundaries = ref('')
+const companionAnchorPath = ref('')
+
+const AI_COMPANION_SEAT = '协同DM'
+const companionPurposeOptions: Array<{ value: AiCompanionPurpose; label: string }> = [
+  { value: 'support', label: '支援' },
+  { value: 'atmosphere', label: '气氛' },
+  { value: 'plot', label: '推进剧情' },
+  { value: 'combat', label: '战术' },
+  { value: 'scout', label: '侦察' },
+  { value: 'knowledge', label: '知识' },
+]
 
 // Assistant (rules Q&A)
 const assistantQuestion = ref('')
@@ -393,7 +409,47 @@ const standbyCharacters = computed(() =>
   activeCharacters.value.filter((character) => !selectedActionPaths.value.includes(character.path)),
 )
 
+function isAiCompanion(character: CharacterSummary) {
+  return character.controller === AI_COMPANION_SEAT || character.aiHosted || character.requestedBy === props.session.seatName
+}
+
+function companionRoleLabel(role?: string) {
+  if (!role) return ''
+  return companionPurposeOptions.find((option) => option.value === role)?.label || role
+}
+
+const automaticCompanions = computed(() => {
+  const relevantScenes = new Set((selectedActionCharacters.value.length ? selectedActionCharacters.value : activeCharacters.value).map((character) => character.sceneId))
+  return props.snapshot.visibleCharacters.filter((character) =>
+    isAiCompanion(character)
+    && (character.inGame || character.lifecycle === 'active')
+    && (!relevantScenes.size || relevantScenes.has(character.sceneId)),
+  )
+})
+
+const companionAnchorCandidates = computed(() => activeCharacters.value)
+const companionAnchor = computed(() =>
+  companionAnchorCandidates.value.find((character) => character.path === companionAnchorPath.value)
+  || companionAnchorCandidates.value[0]
+  || null,
+)
+
 const hasSelectedActions = computed(() => selectedActionCharacters.value.length > 0)
+
+watch(
+  [companionAnchorCandidates, selectedActionPaths],
+  () => {
+    const candidates = companionAnchorCandidates.value
+    if (!candidates.length) {
+      companionAnchorPath.value = ''
+      return
+    }
+    if (candidates.some((character) => character.path === companionAnchorPath.value)) return
+    const selected = candidates.find((character) => selectedActionPaths.value.includes(character.path))
+    companionAnchorPath.value = selected?.path || candidates[0].path
+  },
+  { immediate: true },
+)
 
 // Scene readiness
 const readiness = ref<SceneReadinessResult | null>(null)
@@ -466,6 +522,7 @@ const agentStatusRuns = computed(() => {
 function agentKindLabel(kind: string) {
   if (kind === 'contract_onboarding') return '进入灰区'
   if (kind === 'forge') return '创建角色'
+  if (kind === 'ai_companion') return '协同角色'
   if (kind === 'action') return '行动回合'
   if (kind === 'assistant') return '规则助手'
   return kind
@@ -706,6 +763,21 @@ function submitForge() {
   emit('runForge', { ...forge })
 }
 
+function submitCompanion() {
+  const anchor = companionAnchor.value
+  const concept = companionConcept.value.trim()
+  if (!anchor || !concept) return
+  emit('runAiCompanion', {
+    anchorCharacterPath: anchor.path,
+    purpose: companionPurpose.value,
+    concept,
+    boundaries: companionBoundaries.value.trim() || undefined,
+  })
+  companionConcept.value = ''
+  companionBoundaries.value = ''
+  companionOpen.value = false
+}
+
 async function submitAssistant() {
   const q = assistantQuestion.value.trim()
   if (!q) return
@@ -772,9 +844,17 @@ function bloodLabel(character: CharacterSummary) {
               {{ phaseHints[currentPhase] }} 已选 {{ selectedActionCharacters.length }} 人；
               <span v-if="standbyCharacters.length">待命：{{ standbyCharacters.map((character) => character.name).join('、') }}</span>
               <span v-else>没有待命角色。</span>
+              <span v-if="automaticCompanions.length"> 自动协同：{{ automaticCompanions.map((character) => character.name).join('、') }}。</span>
             </div>
           </div>
           <div class="flex flex-wrap gap-2">
+            <button
+              @click="companionOpen = !companionOpen"
+              :disabled="!activeCharacters.length"
+              class="rounded-sm border border-navy-800 bg-navy-800 px-5 py-3 text-center font-mono text-[13px] font-bold tracking-[0.12em] text-white hover:bg-navy-900 disabled:opacity-40"
+            >
+              {{ companionOpen ? '收起协同DM' : '申请协同DM角色' }}
+            </button>
             <button
               @click="forgeOpen = !forgeOpen"
               class="rounded-sm border border-crimson-700 bg-crimson-600 px-5 py-3 text-center font-mono text-[13px] font-bold tracking-[0.12em] text-white hover:bg-crimson-700"
@@ -985,6 +1065,12 @@ function bloodLabel(character: CharacterSummary) {
               {{ statusText[seatStatus] || seatStatus }}
             </span>
           </div>
+          <div v-if="activeCharacters.length" class="rounded-sm border border-paper-300 bg-paper-100 px-3 py-2 text-xs leading-6 text-paper-800">
+            <span class="font-mono font-bold tracking-[0.12em] text-paper-600">本轮：</span>
+            真人角色 {{ selectedActionCharacters.map((character) => character.name).join('、') || '未选择' }}；
+            待命 {{ standbyCharacters.map((character) => character.name).join('、') || '无' }}；
+            自动协同 {{ automaticCompanions.map((character) => character.name).join('、') || '无' }}
+          </div>
 
           <div class="border-t border-paper-300 pt-3">
             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -1033,6 +1119,12 @@ function bloodLabel(character: CharacterSummary) {
                       <div class="font-serif text-base font-bold text-paper-950">{{ character.name }}</div>
                       <div class="mt-1 font-mono text-[10px] tracking-[0.12em] text-paper-700">
                         {{ character.location }} · {{ character.sceneId }} · {{ character.partyId }}
+                      </div>
+                      <div v-if="isAiCompanion(character)" class="mt-2 flex flex-wrap gap-1.5">
+                        <span class="stamp text-navy-800">协同DM</span>
+                        <span v-if="character.aiHosted" class="stamp text-navy-800">AI托管</span>
+                        <span v-if="character.temporary" class="stamp text-ochre-700">临时角色</span>
+                        <span v-if="companionRoleLabel(character.aiRole)" class="stamp text-paper-800">{{ companionRoleLabel(character.aiRole) }}</span>
                       </div>
                     </div>
                   </div>
@@ -1237,6 +1329,12 @@ function bloodLabel(character: CharacterSummary) {
                       <div class="mt-1 font-mono text-[10px] tracking-[0.12em] text-paper-700">
                         {{ character.controller || '未绑定席位' }} · {{ character.location }} · {{ character.sceneId }}
                       </div>
+                      <div v-if="isAiCompanion(character)" class="mt-2 flex flex-wrap gap-1.5">
+                        <span class="stamp text-navy-800">协同DM</span>
+                        <span v-if="character.aiHosted" class="stamp text-navy-800">AI托管</span>
+                        <span v-if="character.temporary" class="stamp text-ochre-700">临时角色</span>
+                        <span v-if="companionRoleLabel(character.aiRole)" class="stamp text-paper-800">{{ companionRoleLabel(character.aiRole) }}</span>
+                      </div>
                     </div>
                   </div>
                   <div class="flex flex-wrap items-center gap-2 lg:justify-end">
@@ -1308,6 +1406,54 @@ function bloodLabel(character: CharacterSummary) {
           <div>类型：{{ round.kind === 'forge' ? '欢迎场景' : '行动处理' }}</div>
           <div>状态：{{ statusText[round.status] || round.status }}</div>
           <div>席位：{{ round.participantSeats.join(', ') || '无' }}</div>
+        </div>
+      </div>
+
+      <div v-if="companionOpen" class="clash-card overflow-hidden">
+        <div class="clash-card-header px-4 py-3" style="background: #1f4f64;">
+          <div class="font-mono text-[10px] font-bold tracking-[0.18em]">申请协同DM角色</div>
+          <div class="mt-1 text-sm text-white/80">生成后由协同DM席位自动托管，加入当前场景。</div>
+        </div>
+        <div class="space-y-3 p-4">
+          <label class="block space-y-1">
+            <div class="font-mono text-[10px] tracking-[0.18em] text-paper-600">锚定角色</div>
+            <select v-model="companionAnchorPath" class="clash-input w-full px-3 py-2 text-sm" :disabled="!companionAnchorCandidates.length">
+              <option v-for="character in companionAnchorCandidates" :key="character.path" :value="character.path">
+                {{ character.name }} · {{ character.location }}
+              </option>
+            </select>
+          </label>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="option in companionPurposeOptions"
+              :key="option.value"
+              type="button"
+              @click="companionPurpose = option.value"
+              class="rounded-sm border px-3 py-2 font-mono text-[10px] font-bold tracking-[0.12em]"
+              :class="companionPurpose === option.value ? 'border-navy-800 bg-navy-800 text-white' : 'border-paper-300 bg-white text-paper-800 hover:border-navy-700'"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <textarea
+            v-model="companionConcept"
+            rows="3"
+            class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6"
+            placeholder="一句话写你需要的临时伙伴，例如：一个懂黑市规矩、会帮忙圆场的向导。"
+          />
+          <textarea
+            v-model="companionBoundaries"
+            rows="2"
+            class="clash-textarea w-full resize-y px-3 py-2 text-sm leading-6"
+            placeholder="可选边界：不要替玩家做主线决定 / 不参与火力压制 / 只提供线索。"
+          />
+          <button
+            @click="submitCompanion"
+            :disabled="busy || !companionAnchor || !companionConcept.trim()"
+            class="w-full rounded-sm border border-navy-800 bg-navy-800 px-4 py-3 font-mono text-[11px] font-bold tracking-[0.16em] text-white disabled:opacity-40"
+          >
+            提交协同DM申请
+          </button>
         </div>
       </div>
 

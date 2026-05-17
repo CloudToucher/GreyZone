@@ -69,7 +69,7 @@ export interface IntentDocument {
 
 export interface ArchiveEntry {
   id: string
-  kind: 'action' | 'forge'
+  kind: 'action' | 'forge' | 'ai_companion'
   packetPath: string
   resultPath: string | null
   updatedAt: string
@@ -104,7 +104,7 @@ export interface SceneThread {
 
 export interface LatestResultSummary {
   id: string
-  kind?: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  kind?: 'contract_onboarding' | 'action' | 'forge' | 'assistant' | 'ai_companion'
   path: string
   rawPath?: string
   updatedAt: string
@@ -152,7 +152,7 @@ export interface RoomSnapshot {
 
 export interface AiQueueItem {
   id: string
-  kind: 'action' | 'forge'
+  kind: 'action' | 'forge' | 'ai_companion'
   status: 'waiting' | 'composing' | 'running' | 'done' | 'error'
   participantSeats: string[]
   sceneIds: string[]
@@ -196,6 +196,7 @@ const INTENTS_DIR = `${TABLE_DIR}/intents`
 const ROUNDS_DIR = `${TABLE_DIR}/rounds`
 
 export const DM_HOSTED_MARKER = 'AI DM托管状态'
+export const AI_COMPANION_SEAT = '协同DM'
 
 const PUBLIC_DOCS = new Set(['README.md', '开始游戏.md', '一句话开局.md', '先看这里.md', 'playground.md'])
 const PUBLIC_PREFIXES = ['rules', 'assets/items', 'characters/templates']
@@ -539,7 +540,7 @@ export async function ensureTableState(root: string) {
   const charSummaries = await readAllCharacterSummaries(root)
 
   if (!seatsExists) {
-    const seatNames = new Set(['AI Monitor', ...charSummaries.map((entry) => entry.controller).filter(Boolean) as string[]])
+    const seatNames = new Set(['AI Monitor', AI_COMPANION_SEAT, ...charSummaries.map((entry) => entry.controller).filter(Boolean) as string[]])
     const seats: SeatRecord[] = [...seatNames].map((name) => ({
       name,
       role: name === 'AI Monitor' ? 'dm' : 'player',
@@ -580,6 +581,7 @@ export async function reconcileTableFromCharacters(root: string) {
   const seatNames = new Set([...originalSeatsByName.keys(), ...latestSeatsByName.keys()])
 
   seatNames.add(room.ownerSeat)
+  seatNames.add(AI_COMPANION_SEAT)
   for (const summary of charSummaries) {
     if (summary.controller) seatNames.add(summary.controller)
   }
@@ -1056,6 +1058,11 @@ export async function checkSceneReadiness(root: string, submittedSeatName: strin
     if (!seat) continue
 
     const binding = sceneBindings.find((b) => b.primarySeat === seatName)
+    if (seatName === AI_COMPANION_SEAT) {
+      dmHostedSeats.push({ seatName })
+      readySeats.push({ seatName, status: 'ai_companion' })
+      continue
+    }
     
     // Check if DM-hosted (character without primary seat, or intent says DM托管)
     if (!binding || binding.dmHosted) {

@@ -62,6 +62,10 @@ export interface CharacterSummary {
   inventory: string[]
   safeBox: Array<{ label: string; item: string; empty: boolean }>
   semanticStatus: string[]
+  aiRole?: string
+  aiHosted?: boolean
+  temporary?: boolean
+  requestedBy?: string
   stats: {
     level?: string | number
     xp?: string | number
@@ -124,7 +128,7 @@ export interface SceneThread {
 
 export interface LatestResultSummary {
   id: string
-  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant' | 'ai_companion'
   path: string
   rawPath: string
   updatedAt: string
@@ -136,7 +140,7 @@ export interface LatestResultSummary {
 
 export interface AiQueueItem {
   id: string
-  kind: 'action' | 'forge'
+  kind: 'action' | 'forge' | 'ai_companion'
   status: 'waiting' | 'composing' | 'running' | 'done' | 'error' | 'stale'
   participantSeats: string[]
   sceneIds: string[]
@@ -167,7 +171,7 @@ export interface AgentArtifactStat {
 export interface AgentRunSummary {
   id: string
   agentName: string
-  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant'
+  kind: 'contract_onboarding' | 'action' | 'forge' | 'assistant' | 'ai_companion'
   title: string
   status: 'waiting' | 'running' | 'validating' | 'done' | 'error' | 'stale'
   rawStatus: 'waiting' | 'running' | 'validating' | 'done' | 'error'
@@ -229,7 +233,7 @@ export interface RoomSnapshot {
   sharedBoard: FilePayload | null
   archives: Array<{
     id: string
-    kind: 'action' | 'forge'
+    kind: 'action' | 'forge' | 'ai_companion'
     packetPath: string
     resultPath: string | null
     updatedAt: string
@@ -240,7 +244,7 @@ export interface RoomSnapshot {
 
 export interface VisibleRoundState {
   id: string
-  kind: 'action' | 'forge'
+  kind: 'action' | 'forge' | 'ai_companion'
   status: 'idle' | 'running' | 'done' | 'error'
   startedAt: string
   endedAt?: string
@@ -267,6 +271,15 @@ export interface ForgePayload {
   boundaries?: string
   extraNotes?: string
   fileHint?: string
+}
+
+export type AiCompanionPurpose = 'support' | 'atmosphere' | 'plot' | 'combat' | 'scout' | 'knowledge'
+
+export interface AiCompanionRequestPayload {
+  anchorCharacterPath: string
+  purpose: AiCompanionPurpose
+  concept: string
+  boundaries?: string
 }
 
 export interface OpencodeProbeResult {
@@ -365,6 +378,10 @@ export async function runActionJob(session: SessionCredentials, actions: Charact
 
 export async function runForgeJob(session: SessionCredentials, forge: ForgePayload) {
   return sendJson<{ jobId: string; job: unknown }>('/api/jobs/forge', 'POST', { forge }, session)
+}
+
+export async function runAiCompanionJob(session: SessionCredentials, companion: AiCompanionRequestPayload) {
+  return sendJson<{ jobId: string; job: unknown }>('/api/jobs/ai-companion', 'POST', { companion }, session)
 }
 
 export interface SceneReadinessResult {
