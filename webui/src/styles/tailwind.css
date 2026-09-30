@@ -1,6 +1,0 @@
-@import 'highlight.js/styles/github-dark.css';
-@import './theme.css';
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;

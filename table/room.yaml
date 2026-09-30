@@ -1,9 +1,0 @@
-version: 1
-title: Gray Zone Table
-ruleset: gray-zone
-ownerSeat: AI Monitor
-phase: idle
-currentRoundId: null
-sharedBoardPath: table/shared_board.md
-createdAt: '2026-05-04T07:32:14.841Z'
-updatedAt: '2026-05-05T08:41:03.566Z'

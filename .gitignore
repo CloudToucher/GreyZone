@@ -1,21 +1,9 @@
-# Node.js / npm
-webui/node_modules/
-
-# Vite build output
-webui/dist/
-
-# Temp / debug output
-webui/_sse_out.txt
-
-# Gameplay logs — tracked for analysis across machines
-!logs/日志系统说明.md
-
-# IDE
-.vscode/
-.idea/
-
-# System files
-.DS_Store
-Thumbs.db
-*.tmp
+node_modules/
+dist/
+.env
+.data/
+test-results/
+playwright-report/
 *.log
+*.tsbuildinfo
+.DS_Store
