@@ -1,1326 +1,1273 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
+  ArrowDown,
+  ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
-  Backpack,
   Check,
   ChevronDown,
-  CircleHelp,
-  Clock3,
-  Crosshair,
+  Compass,
   Download,
-  Flag,
-  HeartPulse,
+  Edit3,
+  EyeOff,
+  FileText,
+  LoaderCircle,
   MapPin,
+  MessageCircle,
+  Pause,
+  Play,
+  Plus,
   Radio,
-  RotateCcw,
   Send,
   Shield,
   Users,
   X,
-  Zap,
 } from 'lucide-react';
 import {
-  capacity,
-  carriedWeight,
-  gameDate,
-  profileNames,
-  schoolNames,
-  skillNames,
-  statNames,
-  type Command,
-  type Profile,
+  attributes,
+  dateLabel,
+  type Data,
+  type Json,
+  type PublicRecord,
   type PublicState,
-  type School,
-  type SessionCredentials,
-  type Amendment,
 } from '../shared/types';
-import { ApiError, api, makeRequestId, subscribe } from './api';
-import Map from './Map';
-import { Landing, Workshop, PersonalDetails } from './Entry';
-const KEY = 'greyzone.session.v2';
-const RECENT = 'greyzone.recent.v2';
-type RecentRoom = SessionCredentials & { name: string };
-function recentRooms(): RecentRoom[] {
+import { api, ApiError, subscribe, type Access } from './api';
+
+const requestId = () => crypto.randomUUID();
+const saved = (): Access[] => {
   try {
-    return JSON.parse(localStorage.getItem(RECENT) ?? '[]');
+    return JSON.parse(localStorage.getItem('greyzone.tables.v3') ?? '[]');
   } catch {
     return [];
   }
-}
-const schoolLimits: Record<School, string> = {
-  none: '没有异能。依靠训练、装备和判断，同样能够进入灰区。',
-  body: '短时强化一次发力。消耗2能量；无法抵挡步枪弹或恢复创伤。',
-  element: '五米内对可见目标施加一次共振冲击。消耗3能量。',
-  sense: '二十米内感知活动与能量轮廓。消耗2能量；无法读心或识别身份。',
-  space: '十米内察觉空间扭曲，偏转手边轻物。消耗3能量；初阶无法瞬移。',
-  mind: '稳定自身恐惧，或接触自愿者协助集中注意。消耗2能量；不能心控。',
 };
-function Rules({ close }: { close: () => void }) {
-  return (
-    <div className="modal-backdrop" onClick={close}>
-      <section
-        className="rules modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="行动规则"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button className="icon close" onClick={close} aria-label="关闭规则">
-          <X size={20} />
-        </button>
-        <span className="eyebrow">FIELD MANUAL / 02</span>
-        <h2>先说办法，再承担结果。</h2>
-        <p>
-          你控制自己的角色。地图、物品和合同提供已知条件；自由输入用于交涉、改造、布置陷阱、寻找其他路线，以及任何有依据的行动。
-        </p>
-        <div className="rule-grid">
-          <article>
-            <b>01 / 裁定</b>
-            <p>
-              提问与讨论直接交流。需要承担代价的行动会列出时间、材料、检定与风险，你可以追问、改办法或确认。
-            </p>
-          </article>
-          <article>
-            <b>02 / 百分骰</b>
-            <p>
-              D100
-              不超过目标值即成功。目标值来自属性×5、训练、环境、疲劳和伤势；普通检定限制在5%至95%。确定的事无需掷骰。
-            </p>
-          </article>
-          <article>
-            <b>03 / 活下来</b>
-            <p>
-              枪弹逐发计算。躯干护甲按装备记录减轻伤势。出血随时间持续，血量低于35失去意识，归零死亡。止血不等于治愈。
-            </p>
-          </article>
-          <article>
-            <b>04 / 异能</b>
-            <p>
-              灰区内适应一小时，接触结晶才能使用。连续使用增加耗能；共鸣加负荷超过意志会反噬。离开区域立即失效。
-            </p>
-          </article>
-          <article>
-            <b>05 / 时间</b>
-            <p>
-              移动、治疗、等待推动同一世界时钟。黑潮按周向外扩散，人物会迁移、供应会收缩。关闭网页不会推进游戏时间。
-            </p>
-          </article>
-          <article>
-            <b>06 / 多人</b>
-            <p>
-              最多四名玩家，各自拥有位置、装备和行动权。依次提交裁定，只有行动者能确认。长时间行动会影响所有人的饥渴和出血。
-            </p>
-          </article>
-        </div>
-        <p className="muted">
-          属性采用1—10量表，身份、专长与装备来自你和主持人的共同设定。异能按谈妥的原理、范围与代价裁定，特殊用法和能力成长都可以继续商量。
-        </p>
-      </section>
-    </div>
-  );
-}
-type Retry = { path: string; body: Record<string, unknown> };
-function SheetChanges({ changes }: { changes: Amendment['changes'] }) {
-  return (
-    <div className="sheet-changes">
-      {changes.background && <p>{changes.background}</p>}
-      {changes.personal && (
-        <PersonalDetails
-          personal={{
-            identity: '',
-            appearance: '',
-            motives: '',
-            relationships: '',
-            preferences: '',
-            boundaries: '',
-            advantages: '',
-            complications: '',
-            notes: '',
-            ...changes.personal,
-          }}
-        />
-      )}
-      {changes.stats && (
-        <p>
-          属性：
-          {Object.entries(changes.stats)
-            .map(([k, v]) => `${statNames[k as keyof typeof statNames]} ${v}`)
-            .join(' · ')}
-        </p>
-      )}
-      {changes.training && (
-        <p>
-          训练：
-          {Object.entries(changes.training)
-            .map(([k, v]) => `${skillNames[k as keyof typeof skillNames] ?? k} ${v}`)
-            .join(' · ')}
-        </p>
-      )}
-      {changes.expertise && (
-        <section>
-          <b>修订后的专长</b>
-          {changes.expertise.length ? (
-            changes.expertise.map((e) => (
-              <p key={e.name}>
-                {e.name} · {statNames[e.attribute]} + {e.training}
-                <br />
-                {e.scope}
-              </p>
-            ))
-          ) : (
-            <p>无专长</p>
-          )}
-        </section>
-      )}
-      {changes.abilities && (
-        <section>
-          <b>修订后的异能</b>
-          {changes.abilities.length ? (
-            changes.abilities.map((a) => (
-              <div key={a.id}>
-                <h4>
-                  {a.name} · {schoolNames[a.school]}
-                </h4>
-                <p>{a.description}</p>
-                <p>{a.applications}</p>
-                <p>{a.limits}</p>
-                <p>
-                  能耗 {a.cost} · 负荷 +{a.strain} · {a.consequences}
-                </p>
-              </div>
-            ))
-          ) : (
-            <p>无异能</p>
-          )}
-        </section>
-      )}
-    </div>
-  );
-}
-export default function App() {
-  const [credentials, setCredentials] = useState<SessionCredentials | null>(() => {
-      try {
-        return JSON.parse(localStorage.getItem(KEY) ?? 'null');
-      } catch {
-        return null;
-      }
-    }),
-    [state, setState] = useState<PublicState | null>(null),
-    [error, setError] = useState(''),
-    [busy, setBusy] = useState(false),
-    [connected, setConnected] = useState(false),
-    [rules, setRules] = useState(false),
-    [intent, setIntent] = useState(''),
-    [retry, setRetry] = useState<Retry | null>(null),
-    [tab, setTab] = useState('map'),
-    [mobile, setMobile] = useState('scene'),
-    [selected, setSelected] = useState(''),
-    [showInventory, setShowInventory] = useState(true),
-    [mapExpanded, setMapExpanded] = useState(false),
-    [history, setHistory] = useState(12);
-  const current = useRef<PublicState | null>(null),
-    sending = useRef(false),
-    startedWorkshop = useRef(new Set<string>()),
-    conversationEnd = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (mobile === 'scene')
-      conversationEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [state?.journal.length, state?.proposal?.id, state?.sheetProposal?.id]);
-  const accept = (s: PublicState) => {
-    if (!current.current || s.id !== current.current.id || s.revision >= current.current.revision) {
-      current.current = s;
-      setState(s);
-    }
-  };
-  useEffect(() => {
-    if (!credentials) return;
-    const abort = new AbortController();
-    api<PublicState>(`/rooms/${credentials.room}`, undefined, credentials, abort.signal)
-      .then((s) => {
-        if (!abort.signal.aborted) accept(s);
-      })
-      .catch((e) => {
-        if (abort.signal.aborted) return;
-        setError(e.message);
-        if (e instanceof ApiError && [401, 404].includes(e.status)) {
-          localStorage.removeItem(KEY);
-          setCredentials(null);
-        }
-      });
-    void subscribe(
-      credentials,
-      abort.signal,
-      (s) => {
-        if (!abort.signal.aborted) accept(s);
-      },
-      setConnected,
+const labels: Record<string, string> = {
+  background: '经历',
+  appearance: '外貌',
+  goals: '目标',
+  relationships: '关系',
+  preferences: '玩法约定',
+  description: '说明',
+  role: '身份',
+  status: '状况',
+  active: '可行动',
+  incapacitated: '失能',
+  dying: '濒死',
+  dead: '死亡',
+  resources: '物资',
+  cash: '灰币',
+  abilities: '能力',
+  principle: '原理',
+  range: '范围',
+  prerequisites: '条件',
+  cost: '代价',
+  overload: '透支后果',
+  limits: '限制',
+  applications: '用途',
+  remedy: '处理办法',
+  part: '部位',
+  severity: '伤情',
+  quantity: '数量',
+  weight: '重量',
+  ammo: '弹药',
+  capacity: '容量',
+  loaded: '已装弹',
+  owner: '持有人',
+  region: '区域',
+  notes: '笔记',
+  school: '体系',
+  conditions: '伤势与状态',
+};
+function Words({ value }: { value: Json }) {
+  if (value === null || value === '') return null;
+  if (typeof value === 'boolean') return <>{value ? '是' : '否'}</>;
+  if (Array.isArray(value))
+    return (
+      <div className="value-list">
+        {value.map((v, i) => (
+          <div key={i}>
+            <Words value={v} />
+          </div>
+        ))}
+      </div>
     );
-    return () => abort.abort();
-  }, [credentials]);
-  useEffect(() => {
-    const w = state?.workshop;
-    if (
-      !state ||
-      !credentials ||
-      !w ||
-      w.accepted ||
-      w.version ||
-      busy ||
-      state.busy ||
-      retry ||
-      error ||
-      startedWorkshop.current.has(w.requestId)
-    )
-      return;
-    startedWorkshop.current.add(w.requestId);
-    void send('workshop', { requestId: w.requestId, revision: state.revision, message: w.seed });
-  }, [state, credentials, busy, retry, error]);
-  useEffect(() => {
-    if (!state || !credentials) return;
-    const me = state.characters.find((c) => c.id === state.me);
-    if (me?.ready)
-      localStorage.setItem(
-        RECENT,
-        JSON.stringify(
-          recentRooms().map((r) => (r.token === credentials.token ? { ...r, name: me.name } : r)),
-        ),
-      );
-  }, [state, credentials]);
-  async function enter(concept: string, room?: string) {
+  if (typeof value === 'object')
+    return (
+      <dl className="details-grid">
+        {Object.entries(value)
+          .filter(([k]) => !['id', 'ready', 'delegated'].includes(k))
+          .map(([k, v]) => (
+            <div key={k}>
+              <dt>{labels[k] ?? k}</dt>
+              <dd>
+                <Words value={v} />
+              </dd>
+            </div>
+          ))}
+      </dl>
+    );
+  return <>{labels[String(value)] ?? String(value)}</>;
+}
+function Paragraphs({ text }: { text: string }) {
+  return (
+    <div className="prose">
+      {text.split(/\n\s*\n/).map((p, i) => (
+        <p key={i}>
+          {p
+            .replace(/^#{1,4}\s/gm, '')
+            .split(/(\*\*[^*]+\*\*)/g)
+            .map((s, j) => (s.startsWith('**') ? <strong key={j}>{s.slice(2, -2)}</strong> : s))}
+        </p>
+      ))}
+    </div>
+  );
+}
+function Empty({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: typeof Compass;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="empty">
+      <Icon size={26} />
+      <h3>{title}</h3>
+      <p>{children}</p>
+    </div>
+  );
+}
+
+function Gate({ enter }: { enter: (a: Access) => void }) {
+  const [mode, setMode] = useState<'create' | 'join'>('create'),
+    [name, setName] = useState(''),
+    [room, setRoom] = useState(''),
+    [title, setTitle] = useState('灰区冒险'),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  const pending = useRef<{ path: string; body: unknown } | null>(null);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
     setBusy(true);
     setError('');
+    const input = { requestId: requestId(), name, ...(mode === 'create' ? { title } : {}) };
+    const task = pending.current ?? {
+      path: mode === 'create' ? '/api/rooms' : `/api/rooms/${room.toUpperCase()}/join`,
+      body: input,
+    };
+    pending.current = task;
     try {
-      const r = await api<SessionCredentials & { state: PublicState }>(
-        room ? `/rooms/${room}/join` : '/rooms',
-        { concept },
-      );
-      const c = { room: r.room, token: r.token };
-      localStorage.setItem(KEY, JSON.stringify(c));
-      localStorage.setItem(
-        RECENT,
-        JSON.stringify(
-          [
-            { ...c, name: concept.slice(0, 18) },
-            ...recentRooms().filter((x) => x.token !== c.token),
-          ].slice(0, 12),
-        ),
-      );
-      setCredentials(c);
-      accept(r.state);
+      const result = await api<{ id: string; token: string }>(task.path, undefined, task.body);
+      pending.current = null;
+      enter({ ...result, name });
     } catch (e) {
-      setError(e instanceof Error ? e.message : '登记失败。');
+      setError((e as Error).message);
+      if (e instanceof ApiError && e.status) pending.current = null;
     } finally {
       setBusy(false);
     }
   }
-  async function send(path: string, body: Record<string, unknown>, isRetry = false) {
-    if (!credentials || sending.current) return false;
-    if (retry && !isRetry) return false;
-    const request = { path, body };
-    sending.current = true;
+  return (
+    <main className="gate">
+      <header className="gate-head">
+        <span className="brand">
+          灰区<span>TRPG / 团桌</span>
+        </span>
+        <span className="edition">2037 · 新沪港</span>
+      </header>
+      <div className="gate-body">
+        <section className="gate-world">
+          <div className="eyebrow">
+            <span className="signal" /> 封锁区内，生活仍在继续
+          </div>
+          <h1>灰区</h1>
+          <p className="gate-subtitle">
+            你做出选择。
+            <br />
+            人物与世界作出回应。
+          </p>
+          <p className="gate-description">
+            港口留下的机器还在转，诊所缺药，雨水正在淹没旧通道。你可能来找一个人，挣一笔钱，也可能一直住在这里。
+          </p>
+          <div className="world-lines">
+            <div>
+              <span>01</span>
+              <p>
+                用自己的话行动<b>调查、交涉、制造，或尝试从未写进规则的办法。</b>
+              </p>
+            </div>
+            <div>
+              <span>02</span>
+              <p>
+                与同伴共同决定<b>各自写下意图，由主持人综合处理这一轮。</b>
+              </p>
+            </div>
+            <div>
+              <span>03</span>
+              <p>
+                承担真实的后果<b>资源会耗尽，关系会改变，伤势需要时间。</b>
+              </p>
+            </div>
+          </div>
+        </section>
+        <section className="gate-form">
+          <div className="eyebrow">落座之前</div>
+          <h2>开始你们的冒险</h2>
+          <p className="muted">进入团桌后，再与主持人讨论角色与开场。</p>
+          <div className="segmented">
+            <button
+              className={mode === 'create' ? 'selected' : ''}
+              onClick={() => {
+                setMode('create');
+                pending.current = null;
+              }}
+            >
+              创建团桌
+            </button>
+            <button
+              className={mode === 'join' ? 'selected' : ''}
+              onClick={() => {
+                setMode('join');
+                pending.current = null;
+              }}
+            >
+              加入朋友
+            </button>
+          </div>
+          <form onSubmit={submit}>
+            <label>
+              你的称呼
+              <input
+                required
+                maxLength={50}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="其他玩家怎样称呼你"
+              />
+            </label>
+            {mode === 'create' ? (
+              <label>
+                团桌名称
+                <input
+                  required
+                  maxLength={100}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </label>
+            ) : (
+              <label>
+                六位团桌码
+                <input
+                  className="room-code"
+                  required
+                  pattern="[A-Fa-f0-9]{6}"
+                  maxLength={6}
+                  value={room}
+                  onChange={(e) => setRoom(e.target.value.toUpperCase())}
+                  placeholder="例如 A3F108"
+                />
+              </label>
+            )}
+            {error && (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            )}
+            <button className="primary wide" disabled={busy}>
+              {busy ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}{' '}
+              {mode === 'create' ? '创建团桌' : '进入团桌'}
+            </button>
+          </form>
+          {saved().length > 0 && (
+            <div className="recent">
+              <div className="eyebrow">继续上次的团桌</div>
+              {saved().map((a) => (
+                <button key={a.id + a.token} onClick={() => enter(a)}>
+                  <span>
+                    {a.name ?? '冒险者'} <small>{a.id}</small>
+                  </span>
+                  <ArrowRight size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+      <footer className="gate-footer">
+        灰区 · 自由叙事桌上角色扮演游戏<span>AI 主持 / 轻规则 / 多人协作</span>
+      </footer>
+    </main>
+  );
+}
+
+function MapView({ records }: { records: PublicRecord[] }) {
+  const places = records.filter((r) => r.kind === 'place');
+  const [chosen, setChosen] = useState<string>();
+  const selected = places.find((r) => r.id === chosen);
+  const positions = Object.fromEntries(
+    places.map((p, i) => [p.id, { x: 90 + (i % 3) * 190, y: 65 + Math.floor(i / 3) * 110 }]),
+  );
+  return (
+    <>
+      <div className="map-key">
+        <span className="signal" /> 只展示你已经知道的地点与连接
+      </div>
+      <svg
+        className="map"
+        viewBox={`0 0 560 ${Math.max(220, Math.ceil(places.length / 3) * 110 + 20)}`}
+        role="img"
+        aria-label="已知地点关系图"
+      >
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#293633" strokeWidth="0.4" />
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+        {places.flatMap((p) =>
+          Array.isArray(p.data.links)
+            ? p.data.links
+                .filter((id) => positions[String(id)])
+                .map((id) => (
+                  <line
+                    key={p.id + id}
+                    x1={positions[p.id].x}
+                    y1={positions[p.id].y}
+                    x2={positions[String(id)].x}
+                    y2={positions[String(id)].y}
+                    stroke="#637d71"
+                    strokeDasharray="4 5"
+                  />
+                ))
+            : [],
+        )}
+        {places.map((p) => (
+          <g
+            key={p.id}
+            tabIndex={0}
+            role="button"
+            aria-label={p.name}
+            onClick={() => setChosen(p.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') setChosen(p.id);
+            }}
+            className="map-place"
+          >
+            <circle
+              cx={positions[p.id].x}
+              cy={positions[p.id].y}
+              r={chosen === p.id ? 8 : 5}
+              fill={chosen === p.id ? '#d5b57b' : '#a2b3a9'}
+            />
+            <text
+              x={positions[p.id].x}
+              y={positions[p.id].y + 27}
+              textAnchor="middle"
+              fill="#d3dace"
+              fontSize="13"
+            >
+              {p.name}
+            </text>
+          </g>
+        ))}
+      </svg>
+      {selected && (
+        <article className="map-detail">
+          <h3>{selected.name}</h3>
+          <Words value={selected.data.description ?? ''} />
+        </article>
+      )}
+    </>
+  );
+}
+
+export default function App() {
+  const [access, setAccess] = useState<Access | null>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('greyzone.active.v3') ?? 'null');
+    } catch {
+      return null;
+    }
+  });
+  const [state, setState] = useState<PublicState | null>(null),
+    [online, setOnline] = useState(false),
+    [error, setError] = useState(''),
+    [busy, setBusy] = useState(false);
+  const [characterId, setCharacterId] = useState(''),
+    [text, setText] = useState(''),
+    [mode, setMode] = useState<'action' | 'discussion'>('action'),
+    [privateInput, setPrivateInput] = useState(false),
+    [askGM, setAskGM] = useState(false),
+    [editing, setEditing] = useState<string>();
+  const [panel, setPanel] = useState<'sheet' | 'inventory' | 'people'>('sheet'),
+    [modal, setModal] = useState<'map' | 'rules' | 'new' | null>(null),
+    [mobile, setMobile] = useState('story'),
+    [rules, setRules] = useState(''),
+    [answer, setAnswer] = useState<Record<string, string>>({}),
+    [newName, setNewName] = useState(''),
+    [concept, setConcept] = useState('');
+  const [pending, setPending] = useState<{ path: string; body: unknown } | null>(null);
+  const storyBottom = useRef<HTMLDivElement>(null);
+  const own = state?.records.filter((r) => state.me.characters.includes(r.id)) ?? [],
+    character = own.find((r) => r.id === characterId) ?? own[0],
+    ready = character?.data.ready === true;
+  const name = (id: string) =>
+    state?.records.find((r) => r.id === id)?.name ??
+    state?.board.find((a) => a.characterId === id)?.characterName ??
+    state?.seats.find((s) => s.characters.includes(id))?.name ??
+    '角色';
+  function enter(a: Access) {
+    setAccess(a);
+    setState(null);
+    setError('');
+    setPending(null);
+    sessionStorage.setItem('greyzone.active.v3', JSON.stringify(a));
+    const all = saved().filter((s) => s.id !== a.id || s.token !== a.token);
+    localStorage.setItem('greyzone.tables.v3', JSON.stringify([a, ...all].slice(0, 12)));
+  }
+  function leave() {
+    setAccess(null);
+    setState(null);
+    sessionStorage.removeItem('greyzone.active.v3');
+  }
+  useEffect(() => {
+    if (!access) return;
+    const controller = new AbortController();
+    void subscribe(access, controller.signal, setState, setOnline);
+    void api<PublicState>(`/api/rooms/${access.id}`, access)
+      .then(setState)
+      .catch((e) => setError(e.message));
+    return () => controller.abort();
+  }, [access]);
+  useEffect(() => {
+    if (character && !characterId) setCharacterId(character.id);
+  }, [character, characterId]);
+  useEffect(() => {
+    if (modal === 'rules' && !rules)
+      void api<{ text: string }>('/api/rules').then((r) => setRules(r.text));
+  }, [modal, rules]);
+  async function send(
+    path: string,
+    payload: Record<string, unknown> = {},
+    retry = false,
+  ): Promise<boolean> {
+    if (!access) return false;
     setBusy(true);
     setError('');
+    const task =
+      retry && pending
+        ? pending
+        : { path: `/api/rooms/${access.id}/${path}`, body: { requestId: requestId(), ...payload } };
+    setPending(task);
     try {
-      const s = await api<PublicState>(`/rooms/${credentials.room}/${path}`, body, credentials);
-      accept(s);
-      setRetry(null);
-      if (path === 'actions') setIntent('');
+      const result = await api<{ characterId?: string }>(task.path, access, task.body);
+      if (result.characterId) setCharacterId(result.characterId);
+      setPending(null);
+      try {
+        setState(await api<PublicState>(`/api/rooms/${access.id}`, access));
+      } catch {
+        setError('请求已保存，正在重新同步显示。无需重复提交。');
+      }
       return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '网络中断，无法确认服务器是否收到请求。');
-      if (e instanceof ApiError && e.status < 500) {
-        setRetry(null);
-        if (e.status === 409)
-          await api<PublicState>(`/rooms/${credentials.room}`, undefined, credentials)
-            .then(accept)
-            .catch(() => {});
-      } else setRetry(request);
+      setError((e as Error).message);
+      if (e instanceof ApiError && e.status) setPending(null);
       return false;
     } finally {
-      sending.current = false;
       setBusy(false);
     }
   }
-  function prepare(command?: Command, text?: string) {
-    if (!state || (command && state.proposal) || retry) return;
-    void send('actions', {
-      requestId: makeRequestId(),
-      revision: state.revision,
-      intent: text ?? intent,
-      ...(command ? { command } : {}),
-    });
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!text.trim()) return;
+    let ok = false;
+    if (mode === 'discussion')
+      ok = await send('messages', {
+        text,
+        askGM,
+        characterId: character?.id,
+        private: privateInput,
+      });
+    else if (character)
+      ok = await send(ready ? 'board' : 'workshop', {
+        characterId: character.id,
+        text,
+        ...(ready ? { private: privateInput, actionId: editing } : {}),
+      });
+    if (ok) {
+      setText('');
+      setEditing(undefined);
+      setMobile('story');
+    }
   }
-  function decision(value: 'confirm' | 'discard') {
-    if (!state?.proposal) return;
-    void send('decisions', {
-      requestId: makeRequestId(),
-      revision: state.revision,
-      proposalId: state.proposal.id,
-      decision: value,
-    });
-  }
-  async function exportRecord() {
-    if (!credentials) return;
-    const data = await api<PublicState>(
-      `/rooms/${credentials.room}/export`,
-      undefined,
-      credentials,
-    );
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
-    );
+  async function exportLog() {
+    if (!access) return;
+    const data = await api<PublicState>(`/api/rooms/${access.id}/export`, access),
+      url = URL.createObjectURL(
+        new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+      );
     const a = document.createElement('a');
     a.href = url;
-    a.download = `greyzone-${credentials.room}.json`;
+    a.download = `灰区-${access.id}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
-  function leave() {
-    localStorage.removeItem(KEY);
-    setCredentials(null);
-    current.current = null;
-    setState(null);
-    setError('');
-    setIntent('');
-    setSelected('');
-    setRetry(null);
-  }
+  if (!access) return <Gate enter={enter} />;
   if (!state)
     return (
-      <>
-        {recentRooms().length > 0 && (
-          <div className="recent-rooms">
-            <span>继续已有战役</span>
-            {recentRooms().map((r) => (
-              <button
-                key={r.token}
-                disabled={busy}
-                onClick={() => {
-                  current.current = null;
-                  localStorage.setItem(KEY, JSON.stringify({ room: r.room, token: r.token }));
-                  setError('');
-                  setCredentials({ room: r.room, token: r.token });
-                }}
-              >
-                {r.name} · {r.room}
-                <ArrowRight size={13} />
-              </button>
-            ))}
-          </div>
-        )}
-        <Landing enter={enter} busy={busy} error={error} />
-        <button className="help-floating" onClick={() => setRules(true)}>
-          <CircleHelp size={17} />
-          行动规则
+      <div className="loading">
+        <LoaderCircle className="spin" />
+        <p>{error || '正在回到团桌…'}</p>
+        <button className="quiet" onClick={leave}>
+          返回入口
         </button>
-        {rules && <Rules close={() => setRules(false)} />}
-      </>
+      </div>
     );
-  const me = state.characters.find((c) => c.id === state.me)!,
-    here = state.locations.find((l) => l.id === me.location)!,
-    target = state.locations.find((l) => l.id === selected) ?? here;
-  if (!me.ready && state.workshop)
-    return (
-      <Workshop
-        state={state}
-        busy={busy}
-        error={error}
-        retry={retry ? () => void send(retry.path, retry.body, true) : null}
-        send={(message) =>
-          send('workshop', {
-            requestId: state.workshop!.version === 0 ? state.workshop!.requestId : makeRequestId(),
-            revision: state.revision,
-            message,
-          })
-        }
-        begin={() =>
-          void send('begin', {
-            requestId: makeRequestId(),
-            revision: state.revision,
-            version: state.workshop!.version,
-          })
-        }
-        cancel={() =>
-          void api(`/rooms/${state.id}/cancel`, {}, credentials!).catch((e) => setError(e.message))
-        }
-        leave={leave}
-      />
-    );
-  const locked = busy || !!state.busy || !!state.proposal || !!retry || me.status !== 'active';
-  const talkLocked =
-    busy || !!state.busy || !!retry || (!!state.proposal && state.proposal.actorId !== me.id);
-  const connectedRoutes = state.routes.filter(
-      (r) => r.from === me.location || r.to === me.location,
-    ),
-    route = connectedRoutes.find((r) => r.from === target.id || r.to === target.id);
-  const action = (cmd: Command, label: string) => prepare(cmd, label);
-  const requestText = (text: string) => {
-    setIntent(text);
-    setMobile('scene');
-  };
+  const inventory = state.records.filter(
+    (r) => r.kind === 'item' && r.data.owner === character?.id && Number(r.data.quantity) > 0,
+  );
+  const question = state.run?.question,
+    canResume = state.me.host || state.run?.kind === 'workshop';
   return (
-    <div className="game">
-      <header className="game-head">
-        <a className="brand" href="/">
-          <span className="brand-mark">灰</span>
-          <span>
-            灰区：撤离<small>GREY ZONE / EXTRACTION</small>
-          </span>
-        </a>
-        <div className="world-time">
-          <Clock3 size={15} />
-          <span>{gameDate(state.minute)}</span>
-          <b>第 {Math.floor(state.minute / 1440) + 1} 天</b>
+    <div className="table-shell">
+      <header className="table-head">
+        <button className="brand" onClick={leave} title="回到团桌入口">
+          灰区<span>TRPG / 团桌</span>
+        </button>
+        <div className="table-title">
+          <h1>{state.title}</h1>
+          <span>{dateLabel(state.minute)} · 游戏内时间</span>
         </div>
-        <nav>
-          <span className="room-code">
-            <Users size={14} />
-            {state.id} · {state.characters.length}/4
-          </span>
-          <span
-            className={`connection ${connected ? 'online' : ''}`}
-            title={connected ? '实时连接正常' : '正在重连'}
-          >
-            <Radio size={14} />
-            {state.mode === 'dsh' ? 'dsh 主持' : '规则演练'}
+        <div className="table-actions">
+          <span className={'connection ' + (online ? 'live' : '')}>
+            <i />
+            {online ? '已连接' : '重连中'}
           </span>
           <button
-            className="icon"
-            title="导出公开记录"
-            aria-label="导出公开记录"
-            onClick={() => void exportRecord().catch((e) => setError(e.message))}
+            className="room-tag"
+            onClick={() => {
+              void navigator.clipboard.writeText(state.id);
+            }}
+            title="复制团桌码"
+          >
+            <Users size={14} />
+            {state.id}
+          </button>
+          <button
+            className="icon-button"
+            title="导出我的记录"
+            aria-label="导出我的记录"
+            onClick={() => void exportLog()}
           >
             <Download size={17} />
           </button>
-          <button className="icon" title="规则" aria-label="规则" onClick={() => setRules(true)}>
-            <CircleHelp size={17} />
-          </button>
           <button
-            className="icon"
-            title="切换战役"
-            aria-label="切换战役"
-            disabled={busy || !!state.busy || !!retry}
-            onClick={() => {
-              localStorage.removeItem(KEY);
-              setCredentials(null);
-              current.current = null;
-              setState(null);
-              setError('');
-              setIntent('');
-              setSelected('');
-            }}
+            className="icon-button"
+            title="规则"
+            aria-label="查看规则"
+            onClick={() => setModal('rules')}
           >
-            <RotateCcw size={16} />
+            <FileText size={17} />
           </button>
-        </nav>
+        </div>
       </header>
-      <div className="mobile-tabs">
+      <nav className="mobile-nav">
         {[
+          ['story', '团录'],
+          ['board', '行动板'],
           ['character', '角色'],
-          ['scene', '现场'],
-          ['world', '区域'],
-        ].map(([k, v]) => (
-          <button key={k} className={mobile === k ? 'active' : ''} onClick={() => setMobile(k)}>
-            {v}
+        ].map(([id, label]) => (
+          <button key={id} className={mobile === id ? 'active' : ''} onClick={() => setMobile(id)}>
+            {label}
           </button>
         ))}
-      </div>
-      <main className={`workspace table-layout panel-${mobile}`}>
-        <aside className={`character-column ${mobile === 'character' ? 'mobile-active' : ''}`}>
-          <div className="column-label">
-            <span>人员档案</span>
-            <span>PERSONNEL / 01</span>
-          </div>
-          <div className="character-heading">
-            <span className="avatar">{me.name.slice(0, 1)}</span>
-            <div>
-              <h2>{me.name}</h2>
-              <p>
-                {me.personal.identity || profileNames[me.profile as Profile] || me.profile} ·{' '}
-                {schoolNames[me.school]}
-              </p>
-            </div>
-          </div>
-          <div className={`health-strip ${me.status !== 'active' ? 'critical' : ''}`}>
-            <HeartPulse size={17} />
-            <b>
-              {me.status === 'dead'
-                ? '已死亡'
-                : me.status === 'unconscious'
-                  ? '失去意识'
-                  : me.wounds.length
-                    ? '负伤'
-                    : '可行动'}
-            </b>
-            <span>血量 {Math.floor(me.blood)} / 100</span>
-          </div>
-          <div className="vital-grid">
-            <div>
-              <span>疲劳</span>
-              <b>
-                {Math.round(me.fatigue)}
-                <small> / 100</small>
-              </b>
-            </div>
-            <div>
-              <span>未补水</span>
-              <b>
-                {me.thirst.toFixed(1)}
-                <small> 小时</small>
-              </b>
-            </div>
-            <div>
-              <span>未进食</span>
-              <b>
-                {me.hunger.toFixed(1)}
-                <small> 小时</small>
-              </b>
-            </div>
-            <div>
-              <span>负重</span>
-              <b className={carriedWeight(me) > capacity(me) ? 'danger-text' : ''}>
-                {carriedWeight(me).toFixed(1)}
-                <small> / {capacity(me)} kg</small>
-              </b>
-            </div>
-          </div>
-          <div className="attributes">
-            {Object.entries(statNames).map(([k, v]) => (
-              <div key={k}>
-                <span>{v}</span>
-                <b>{me.stats[k as keyof typeof statNames]}</b>
-              </div>
-            ))}
-          </div>
-          {me.school !== 'none' && (
-            <section className="power-card">
-              <div>
-                <Zap size={15} />
-                <b>{schoolNames[me.school]}</b>
-                <span>
-                  {Math.floor(me.energy)} / {me.stats.RSN * 3}
-                </span>
-              </div>
-              {me.abilities.length ? (
-                me.abilities.map((a) => (
-                  <details key={a.id}>
-                    <summary>
-                      {a.name} · 能耗 {a.cost} · 负荷 +{a.strain}
-                    </summary>
-                    <p>{a.description}</p>
-                    <p>{a.applications}</p>
-                    <p>{a.limits}</p>
-                    <p>{a.consequences}</p>
-                  </details>
-                ))
-              ) : (
-                <p>{schoolLimits[me.school]}</p>
-              )}
-              <small>
-                负荷 {me.strain.toFixed(1)} · 区域适应 {Math.floor(me.acclimated)}/60 分钟
-              </small>
-            </section>
+      </nav>
+      {error && (
+        <div className="error-strip" role="alert">
+          {error}
+          {pending && (
+            <button disabled={busy} onClick={() => void send('', {}, true)}>
+              重试这次请求
+            </button>
           )}
-          {me.wounds.length > 0 && (
-            <section className="wounds">
-              <h3>伤情</h3>
-              {me.wounds.map((w) => (
-                <div key={w.id}>
-                  <b>
-                    {w.part} · {w.severity}级伤
-                  </b>
-                  <span>
-                    {w.bleeding ? `出血 ${w.bleeding}/分钟` : '已止血'} · {w.cause}
-                  </span>
-                  {w.bleeding > 0 ? (
-                    <button
-                      disabled={locked}
-                      onClick={() => action({ kind: 'bandage', woundId: w.id }, `包扎${w.part}`)}
-                    >
-                      包扎止血
-                    </button>
-                  ) : (
-                    <button
-                      disabled={locked}
-                      onClick={() =>
-                        action({ kind: 'treat', woundId: w.id }, `为${w.part}伤口清创`)
-                      }
-                    >
-                      清创处理
-                    </button>
-                  )}
-                </div>
-              ))}
-            </section>
-          )}
-          {me.conditions.map((condition) => (
-            <div className="power-card" key={condition.id}>
-              <b>{condition.name}</b>
-              <p>{condition.description}</p>
-              {condition.expiresAt !== null && <small>至 {gameDate(condition.expiresAt)}</small>}
-            </div>
-          ))}
-          <div className="money">
-            <span>
-              灰币 <b>{me.cash.toLocaleString()}</b>
-            </span>
-            <span>
-              欠款 <b>{me.debt.toLocaleString()}</b>
-            </span>
-          </div>
-          <button className="inventory-heading" onClick={() => setShowInventory(!showInventory)}>
-            <Backpack size={16} />
-            <b>随身物品</b>
-            <ChevronDown size={15} />
+          <button
+            aria-label="关闭错误"
+            onClick={() => {
+              setError('');
+              setPending(null);
+            }}
+          >
+            <X size={16} />
           </button>
-          {showInventory && (
-            <div className="inventory">
-              {me.inventory.map((i) => (
-                <details key={i.id}>
-                  <summary>
-                    <span>{i.name}</span>
-                    <b>{i.weapon ? `${i.weapon.loaded}/${i.weapon.capacity}` : `×${i.quantity}`}</b>
-                  </summary>
-                  <p>{i.description}</p>
-                  <span className="item-meta">
-                    {(i.weight * i.quantity).toFixed(2)} kg · 参考单价 {i.value} 灰币
-                  </span>
-                  {i.weapon && (
-                    <button
-                      disabled={locked}
-                      onClick={() => action({ kind: 'reload', itemId: i.id }, `装填${i.name}`)}
-                    >
-                      装填弹药
-                    </button>
-                  )}
-                  {['food', 'water'].includes(i.kind) && (
-                    <button
-                      disabled={locked}
-                      onClick={() => action({ kind: 'consume', itemId: i.id }, `使用${i.name}`)}
-                    >
-                      使用一份
-                    </button>
-                  )}
-                  <button
-                    disabled={locked || state.mode === 'local'}
-                    onClick={() => requestText(`使用${i.name}，我想`)}
-                  >
-                    用于自由行动
-                  </button>
-                </details>
-              ))}
-            </div>
-          )}
-          <details className="background">
-            <summary>经历与同伴</summary>
-            <p>{me.background}</p>
-            <PersonalDetails personal={me.personal} />
-            {me.expertise.map((e) => (
-              <p key={e.name}>
-                <b>
-                  {e.name} · {statNames[e.attribute]} + {e.training}
-                </b>
-                <br />
-                {e.scope}
-              </p>
-            ))}
-            {state.characters
-              .filter((c) => c.id !== me.id)
-              .map((c) => (
-                <p key={c.id}>
-                  <b>{c.name}</b> · {state.locations.find((l) => l.id === c.location)?.name}
-                  <br />
-                  {c.status === 'active'
-                    ? '可以行动'
-                    : c.status === 'dead'
-                      ? '已死亡'
-                      : '失去意识'}{' '}
-                  · {c.wounds.length} 处伤
-                </p>
-              ))}
-          </details>
-        </aside>
-        <section className={`scene-column ${mobile === 'scene' ? 'mobile-active' : ''}`}>
-          <div className="scene-header">
-            <div>
-              <span className="eyebrow">
-                {here.zone < 0 ? 'OUTSIDE' : `ZONE ${String(here.zone).padStart(2, '0')}`} /
-                当前地点
-              </span>
-              <h1>{here.name}</h1>
-            </div>
-            <span className="position">
-              <MapPin size={14} />
-              {me.stance === 'cover'
-                ? '依托掩体'
-                : me.stance === 'hidden'
-                  ? '保持隐蔽'
-                  : '正常活动'}
-            </span>
+        </div>
+      )}
+      <main className={'table-columns mobile-' + mobile}>
+        <aside className="character-panel">
+          <div className="panel-heading">
+            <span className="eyebrow">你的角色</span>
+            <button
+              className="icon-button"
+              aria-label="创建角色"
+              disabled={!!state.run || busy}
+              onClick={() => setModal('new')}
+            >
+              <Plus size={17} />
+            </button>
           </div>
-          <div className="scene-description">
-            <p>{here.description}</p>
-            {here.zone >= state.fogZone && (
-              <p className="danger-text">黑潮覆盖：能见度下降，异能额外耗能，停留增加疲劳。</p>
-            )}
-            <div className="quick-actions">
-              <button disabled={locked} onClick={() => action({ kind: 'inspect' }, '观察附近')}>
-                <Crosshair size={14} />
-                观察附近
-              </button>
-              {here.shelter && (
-                <button
-                  disabled={locked}
-                  onClick={() => action({ kind: 'rest', hours: 4 }, '在这里休息四小时')}
-                >
-                  <Clock3 size={14} />
-                  休息四小时
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  setTab('map');
-                  setMobile('world');
+          {own.length ? (
+            <>
+              <select
+                aria-label="当前角色"
+                value={character?.id}
+                onChange={(e) => {
+                  setCharacterId(e.target.value);
+                  setEditing(undefined);
+                  setText('');
                 }}
               >
-                <MapPin size={14} />
-                查看路线
-              </button>
-            </div>
-          </div>
-          <div className="journal-heading">
-            <span>现场记录</span>
-            <span>{state.journal.length} 条 · 结果持续保存</span>
-          </div>
-          <div className="journal" aria-live="polite">
-            {state.journal.length > history && (
-              <button className="text-button" onClick={() => setHistory(history + 20)}>
-                查看更早的记录
-              </button>
-            )}
-            {state.journal.slice(-history).map((e) => (
-              <article className="entry" key={e.id}>
-                <div className="entry-meta">
-                  <time>{gameDate(e.minute).slice(11)}</time>
-                  <span>{e.actor ?? '现场'}</span>
-                  <b>{e.title}</b>
-                </div>
-                {e.intent && <blockquote>{e.intent}</blockquote>}
-                <p>{e.text}</p>
-                {e.roll && (
-                  <div className={`roll ${e.roll.success ? 'passed' : 'failed'}`}>
-                    <span>
-                      {skillNames[e.roll.skill as keyof typeof skillNames] ?? e.roll.skill}
-                    </span>
-                    <b>
-                      D100 <strong>{e.roll.value}</strong> / {e.roll.target}
-                    </b>
-                    <span>{e.roll.success ? '成功' : '失败'}</span>
-                  </div>
-                )}
-                {e.facts.length > 0 && (
-                  <details className="ledger">
-                    <summary>结算记录 · {e.facts.length} 项</summary>
-                    <ul>
-                      {e.facts.map((f, i) => (
-                        <li key={i}>{f}</li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </article>
-            ))}
-          </div>
-          <div className="action-area">
-            {state.sheetProposal && (
-              <section className="proposal sheet-proposal">
-                <span className="eyebrow">主持人提出的角色修订</span>
-                <p>{state.sheetProposal.reason}</p>
-                <SheetChanges changes={state.sheetProposal.changes} />
-                <div className="proposal-buttons">
-                  <button
-                    className="primary"
-                    disabled={locked}
-                    onClick={() =>
-                      void send('sheet-decisions', {
-                        requestId: makeRequestId(),
-                        revision: state.revision,
-                        proposalId: state.sheetProposal!.id,
-                        decision: 'confirm',
-                      })
-                    }
-                  >
-                    采用这份修订
-                  </button>
-                  <button
-                    disabled={locked}
-                    onClick={() =>
-                      void send('sheet-decisions', {
-                        requestId: makeRequestId(),
-                        revision: state.revision,
-                        proposalId: state.sheetProposal!.id,
-                        decision: 'discard',
-                      })
-                    }
-                  >
-                    保持现有档案
-                  </button>
-                </div>
-                <p className="muted">还想修改，可以继续告诉主持人。</p>
-              </section>
-            )}
-            {error && (
-              <div className="error" role="alert">
-                {error}
-                {retry && (
-                  <button disabled={busy} onClick={() => void send(retry.path, retry.body, true)}>
-                    <RotateCcw size={14} />
-                    重试未确认请求
-                  </button>
-                )}
-              </div>
-            )}
-            {state.busy && (
-              <div className="thinking">
-                <span className="spinner" />
-                {state.busy}
-                <button
-                  onClick={() =>
-                    void api(`/rooms/${state.id}/cancel`, {}, credentials!).catch((e) =>
-                      setError(e.message),
-                    )
-                  }
+                {own.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.data.ready ? '' : ' · 草案'}
+                  </option>
+                ))}
+              </select>
+              <section className="character-identity">
+                <div className="portrait">{character!.name.slice(-1)}</div>
+                <span className="eyebrow">{ready ? '已入场' : '与主持人共同创建'}</span>
+                <h2>{character!.name}</h2>
+                <p>
+                  <MapPin size={13} />
+                  {name(String(character!.data.location))}
+                </p>
+                <span
+                  className={'status-label ' + (character!.data.status === 'active' ? '' : 'hurt')}
                 >
-                  取消评估
-                </button>
-              </div>
-            )}
-            {state.proposal && (
-              <section className="proposal">
-                <div className="proposal-head">
-                  <span>行动裁定 / 待确认</span>
-                  <b>{state.characters.find((c) => c.id === state.proposal!.actorId)?.name}</b>
-                </div>
-                <h3>{state.proposal.summary}</h3>
-                <p>{state.proposal.method}</p>
-                <div className="proposal-stats">
-                  <span>
-                    <Clock3 size={14} />
-                    {state.proposal.minutes} 分钟
-                  </span>
-                  <span>
-                    <Crosshair size={14} />
-                    {state.proposal.chance === null
-                      ? '无需检定'
-                      : `${skillNames[state.proposal.skill! as keyof typeof skillNames] ?? state.proposal.skill} ${state.proposal.chance}%`}
-                  </span>
-                  {state.proposal.powerCost > 0 && (
-                    <span>
-                      <Zap size={14} />
-                      {state.proposal.powerCost} 能量 · 失控 {state.proposal.instability}%
-                    </span>
-                  )}
-                </div>
-                <p className="muted">{state.proposal.difficultyReason}</p>
-                {state.proposal.costs.length > 0 && (
-                  <p className="cost-line">消耗：{state.proposal.costs.join('、')}</p>
-                )}
-                <ul>
-                  {state.proposal.risks.map((r, i) => (
-                    <li key={i}>{r}</li>
-                  ))}
-                </ul>
-                <div className="proposal-buttons">
-                  {state.proposal.actorId === me.id && (
+                  {labels[String(character!.data.status)] ?? String(character!.data.status)}
+                </span>
+              </section>
+              <nav className="detail-tabs">
+                {[
+                  ['sheet', '档案'],
+                  ['inventory', '物品'],
+                  ['people', '关系'],
+                ].map(([id, label]) => (
+                  <button
+                    className={panel === id ? 'selected' : ''}
+                    onClick={() => setPanel(id as typeof panel)}
+                    key={id}
+                  >
+                    {label}
+                    {id === 'inventory' && <small>{inventory.length}</small>}
+                  </button>
+                ))}
+              </nav>
+              {panel === 'sheet' && (
+                <div className="sheet">
+                  <div className="stats">
+                    {Object.entries(attributes).map(([key, label]) => (
+                      <div key={key}>
+                        <b>+{String((character!.data.stats as Data)?.[key] ?? 0)}</b>
+                        <span>{label}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="tags">
+                    {((character!.data.specialties ?? []) as string[]).map((s) => (
+                      <span key={s}>{s}</span>
+                    ))}
+                  </div>
+                  {Object.entries(character!.data)
+                    .filter(
+                      ([k, v]) =>
+                        ![
+                          'stats',
+                          'specialties',
+                          'location',
+                          'status',
+                          'resources',
+                          'ready',
+                          'delegated',
+                          'conditions',
+                        ].includes(k) &&
+                        v !== '' &&
+                        (!Array.isArray(v) || v.length > 0),
+                    )
+                    .map(([k, v]) => (
+                      <section className="sheet-section" key={k}>
+                        <h3>{labels[k] ?? k}</h3>
+                        <Words value={v} />
+                      </section>
+                    ))}
+                  {Array.isArray(character!.data.conditions) &&
+                    character!.data.conditions.length > 0 && (
+                      <section className="sheet-section wound">
+                        <h3>伤势与状态</h3>
+                        <Words value={character!.data.conditions} />
+                      </section>
+                    )}
+                  <section className="sheet-section">
+                    <h3>资源</h3>
+                    <Words value={character!.data.resources ?? {}} />
+                  </section>
+                  {!ready ? (
                     <button
-                      className="primary"
-                      disabled={busy || !!retry}
-                      onClick={() => decision('confirm')}
+                      className="primary wide"
+                      disabled={
+                        busy || !!state.run || !(character!.data.specialties as string[]).length
+                      }
+                      onClick={() => void send('adopt', { characterId: character!.id })}
                     >
                       <Check size={16} />
-                      确认行动
-                    </button>
-                  )}
-                  {(state.proposal.actorId === me.id || state.isHost) && (
-                    <button disabled={busy || !!retry} onClick={() => decision('discard')}>
-                      撤回，修改办法
-                    </button>
-                  )}
-                </div>
-              </section>
-            )}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                prepare();
-              }}
-            >
-              <label htmlFor="intent" className="intent-label">
-                接下来呢？
-                <span>
-                  {state.mode === 'local' ? '当前为基础规则演练' : '行动、对话，或和主持人商量'}
-                </span>
-              </label>
-              <textarea
-                id="intent"
-                value={intent}
-                onChange={(e) => setIntent(e.target.value)}
-                disabled={talkLocked || state.mode === 'local'}
-                maxLength={1600}
-                rows={3}
-                placeholder={
-                  state.mode === 'local'
-                    ? '规则演练请使用观察、地图、物品与交易操作。'
-                    : '你说了什么，打算怎么做？也可以问主持人目前有哪些已知条件。'
-                }
-              />
-              <div className="compose-foot">
-                <span>可以说话、行动、提问，或直接和主持人讨论。</span>
-                <button
-                  className="primary"
-                  disabled={talkLocked || !intent.trim() || state.mode === 'local'}
-                  type="submit"
-                >
-                  发送
-                  <Send size={15} />
-                </button>
-              </div>
-            </form>
-          </div>
-          <div ref={conversationEnd} />
-        </section>
-        <aside className={`world-column ${mobile === 'world' ? 'mobile-active' : ''}`}>
-          <div className="context-tabs">
-            {[
-              ['map', '区域'],
-              ['people', '现场'],
-              ['contracts', '合同'],
-              ['notes', '情报'],
-            ].map(([k, v]) => (
-              <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
-                {v}
-              </button>
-            ))}
-          </div>
-          {tab === 'map' && (
-            <>
-              <div className="world-map-head">
-                <span>新沪港灰区</span>
-                <button
-                  className="map-expand"
-                  onClick={() => setMapExpanded(true)}
-                  aria-label="展开区域地图"
-                >
-                  展开
-                </button>
-                <b>
-                  {state.environment.tide === 'closed'
-                    ? '裂隙已关闭'
-                    : `黑潮前锋 · ${state.fogZone} 区${state.environment.tide === 'contained' ? ' / 已遏制' : ''}`}
-                </b>
-              </div>
-              <Map
-                locations={state.locations}
-                routes={state.routes}
-                current={me.location}
-                selected={target.id}
-                onSelect={setSelected}
-                fogZone={state.fogZone}
-              />
-              <div className="map-key">
-                <span>
-                  <i /> 当前位置
-                </span>
-                <span>点击地点查看路线</span>
-              </div>
-              <section className="map-detail">
-                <span className="eyebrow">
-                  {target.zone < 0 ? '边界外' : `${target.zone} 区`} / 地点档案
-                </span>
-                <h3>{target.name}</h3>
-                <p>{target.description}</p>
-                {target.id !== me.location &&
-                  (route ? (
-                    <button
-                      className="primary"
-                      disabled={locked}
-                      onClick={() => {
-                        action({ kind: 'travel', target: target.id }, `前往${target.name}`);
-                        setMobile('scene');
-                      }}
-                    >
-                      准备前往 · {route.minutes} 分钟
-                      <ArrowUpRight size={16} />
+                      采用这份角色档案
                     </button>
                   ) : (
-                    <p className="muted">
-                      当前没有直接路线。沿已知道路逐段前进，或向主持人说明勘查新路线的办法。
-                    </p>
-                  ))}
-              </section>
-              <section className="near-routes">
-                <h3>从这里出发</h3>
-                {connectedRoutes.map((r) => {
-                  const next = state.locations.find(
-                    (l) => l.id === (r.from === me.location ? r.to : r.from),
-                  )!;
-                  return (
-                    <button
-                      key={r.id}
-                      disabled={locked}
-                      onClick={() => {
-                        setSelected(next.id);
-                        action({ kind: 'travel', target: next.id }, `前往${next.name}`);
-                        setMobile('scene');
-                      }}
-                    >
-                      <span>{next.name}</span>
-                      <small>{r.minutes} 分钟</small>
-                      <ArrowRight size={14} />
-                    </button>
-                  );
-                })}
-              </section>
+                    <label className="check-label">
+                      <input
+                        type="checkbox"
+                        checked={character!.data.delegated === true}
+                        disabled={busy || !!state.run}
+                        onChange={(e) =>
+                          void send('delegation', {
+                            characterId: character!.id,
+                            enabled: e.target.checked,
+                          })
+                        }
+                      />
+                      允许主持人托管此角色
+                    </label>
+                  )}
+                </div>
+              )}
+              {panel === 'inventory' && (
+                <div className="inventory">
+                  {inventory.length ? (
+                    inventory.map((item) => (
+                      <details key={item.id}>
+                        <summary>
+                          <span>{item.name}</span>
+                          <b>×{String(item.data.quantity)}</b>
+                        </summary>
+                        <Words
+                          value={Object.fromEntries(
+                            Object.entries(item.data).filter(
+                              ([k]) => !['owner', 'quantity'].includes(k),
+                            ),
+                          )}
+                        />
+                      </details>
+                    ))
+                  ) : (
+                    <p className="muted inset">装备会随角色讨论和实际行动入账。</p>
+                  )}
+                </div>
+              )}
+              {panel === 'people' && (
+                <div className="people">
+                  <section className="sheet-section">
+                    <h3>你的关系</h3>
+                    <Words value={character!.data.relationships ?? '尚未记录'} />
+                  </section>
+                  {state.records
+                    .filter((r) => ['npc', 'relation', 'fact'].includes(r.kind))
+                    .map((r) => (
+                      <details key={r.id}>
+                        <summary>{r.name}</summary>
+                        <Words value={r.data} />
+                      </details>
+                    ))}
+                </div>
+              )}
             </>
+          ) : (
+            <Empty icon={Users} title="先认识你要扮演的人">
+              点击右上角的加号，写下名字和想法，再与主持人讨论。
+            </Empty>
           )}
-          {tab === 'people' && (
-            <section className="people-list">
-              <div className="context-intro">
-                <span className="eyebrow">现场可见</span>
-                <h3>人、物与交易</h3>
-                <p>点击交谈把对象写入行动框。对方的利益与库存会影响回应。</p>
-              </div>
-              {state.entities.map((e) => (
-                <article key={e.id} className="entity">
-                  <div>
-                    <h3>{e.name}</h3>
-                    <span className={e.hostile ? 'hostile' : 'tag'}>
-                      {e.hostile ? '敌对' : e.faction}
-                    </span>
+          <button className="map-open" onClick={() => setModal('map')}>
+            <Compass size={18} />
+            <span>
+              已知地图<small>地点与通行关系</small>
+            </span>
+            <ArrowRight size={16} />
+          </button>
+        </aside>
+        <section className="story-panel">
+          <div className="story-heading">
+            <div>
+              <span className="eyebrow">团录</span>
+              <h2>正在发生的事</h2>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="跳到最新记录"
+              onClick={() =>
+                storyBottom.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+              }
+            >
+              <ArrowDown size={18} />
+            </button>
+          </div>
+          <div className="story-scroll">
+            {state.journal.length ? (
+              state.journal.map((entry, i) => (
+                <article className="entry" key={entry.id}>
+                  <div className="entry-meta">
+                    <span className="entry-index">{String(i + 1).padStart(2, '0')}</span>
+                    <span>主持人</span>
+                    <time>{dateLabel(entry.minute)}</time>
                   </div>
-                  <p>{e.description}</p>
-                  <p className="muted">{e.state}</p>
-                  <div className="entity-actions">
-                    <button
-                      disabled={locked || state.mode === 'local'}
-                      onClick={() => requestText(`我走近${e.name}，保持距离，想问：`)}
-                    >
-                      交谈 / 互动
-                    </button>
-                    {e.kind === 'person' || e.kind === 'machine' ? (
-                      <button
-                        disabled={locked || e.health <= 0}
-                        onClick={() => {
-                          action({ kind: 'attack', target: e.id }, `朝${e.name}射击`);
-                          setMobile('scene');
-                        }}
-                      >
-                        射击
-                      </button>
-                    ) : null}
-                  </div>
-                  {e.merchant && (
-                    <details className="shop">
-                      <summary>查看交易库存 · {e.inventory.length} 类</summary>
-                      {e.inventory.map((i) => (
-                        <div key={i.id}>
-                          <span>
-                            {i.name}
-                            <small>
-                              库存 {i.quantity} · 单价{' '}
-                              {Math.ceil(i.value * (1 + Math.floor(state.minute / 10080) * 0.1))}
-                            </small>
-                          </span>
-                          <button
-                            disabled={locked}
-                            onClick={() => {
-                              action(
-                                { kind: 'buy', entityId: e.id, itemId: i.id, quantity: 1 },
-                                `向${e.name}购买${i.name}`,
-                              );
-                              setMobile('scene');
-                            }}
-                          >
-                            买 1
-                          </button>
+                  {entry.passages.map((p, j) => (
+                    <div key={j}>
+                      {!p.audience.includes('table') && (
+                        <div className="private-mark">
+                          <EyeOff size={12} />
+                          与你有关的记录
+                        </div>
+                      )}
+                      <Paragraphs text={p.text} />
+                    </div>
+                  ))}
+                  {(entry.changes.length > 0 ||
+                    state.rolls.some(
+                      (r) =>
+                        r.runId === entry.runId &&
+                        (entry.checkIds?.includes(r.id) ??
+                          state.journal.find((e) => e.runId === r.runId)?.id === entry.id),
+                    )) && (
+                    <details className="ledger">
+                      <summary>
+                        <span>
+                          <FileText size={13} />
+                          记录与检定
+                        </span>
+                        <ChevronDown size={13} />
+                      </summary>
+                      {state.rolls
+                        .filter(
+                          (r) =>
+                            r.runId === entry.runId &&
+                            (entry.checkIds?.includes(r.id) ??
+                              state.journal.find((e) => e.runId === r.runId)?.id === entry.id),
+                        )
+                        .map((r) => (
+                          <div className="roll" key={r.id}>
+                            <b>d20</b>
+                            <div>
+                              {r.purpose}
+                              <small>
+                                {r.dice.join(' / ')}
+                                {r.modifier >= 0 ? ' + ' : ' − '}
+                                {Math.abs(r.modifier)} = {r.total}
+                                {r.difficulty ? `，目标 ${r.difficulty}` : ''}
+                                {r.opponent ? `，对抗 ${r.opponent.total}` : ''} ·{' '}
+                                {r.outcome
+                                  ? { win: '胜出', tie: '持平', loss: '失利' }[r.outcome]
+                                  : r.success
+                                    ? '成功'
+                                    : '未达成'}
+                              </small>
+                            </div>
+                          </div>
+                        ))}
+                      {entry.changes.map((c, j) => (
+                        <div className="change" key={j}>
+                          <span>{c.name}</span>
+                          {c.summary}
                         </div>
                       ))}
-                      <label>
-                        出售一件物品
-                        <select
-                          defaultValue=""
-                          disabled={locked}
-                          onChange={(ev) => {
-                            if (ev.target.value) {
-                              action(
-                                {
-                                  kind: 'sell',
-                                  entityId: e.id,
-                                  itemId: ev.target.value,
-                                  quantity: 1,
-                                },
-                                `向${e.name}出售物品`,
-                              );
-                              setMobile('scene');
-                              ev.target.value = '';
-                            }
-                          }}
-                        >
-                          <option value="">选择物品 · 按参考价五折收购</option>
-                          {me.inventory.map((i) => (
-                            <option key={i.id} value={i.id}>
-                              {i.name} · {Math.ceil(i.value * 0.5)} 灰币
-                            </option>
-                          ))}
-                        </select>
-                      </label>
                     </details>
                   )}
-                  {!e.merchant && e.inventory.length > 0 && (
-                    <small className="muted">
-                      可见物品：{e.inventory.map((i) => `${i.name} ×${i.quantity}`).join('、')}
-                    </small>
+                  {entry.decisions.some((d) => d.status !== 'done') && (
+                    <div className="decisions">
+                      {entry.decisions
+                        .filter((d) => d.status !== 'done')
+                        .map((d) => (
+                          <p key={d.actionId}>
+                            {
+                              {
+                                partial: '部分执行',
+                                deferred: '顺延',
+                                interrupted: '中断',
+                                rejected: '未执行',
+                              }[d.status as 'partial']
+                            }
+                            ：{d.reason}
+                          </p>
+                        ))}
+                    </div>
                   )}
                 </article>
-              ))}
-            </section>
-          )}
-          {tab === 'contracts' && (
-            <section className="contracts">
-              <div className="context-intro">
-                <span className="eyebrow">工作与报酬</span>
-                <h3>你可以选择接工。</h3>
-                <p>合同不解锁地图。接工后仍可交易、调查或改变计划，超期则无法按原条件交付。</p>
-              </div>
-              {state.contracts.map((t) => (
-                <article className="contract" key={t.id}>
-                  <span className="tag">
-                    {
-                      {
-                        offered: '可接受',
-                        accepted: '已接受',
-                        completed: '已完成',
-                        expired: '已过期',
-                      }[t.status]
-                    }
-                  </span>
-                  <h3>{t.name}</h3>
-                  <p>{t.description}</p>
-                  <div>
-                    <b>{t.reward} 灰币</b>
-                    <small>截止 {gameDate(t.deadline).slice(0, 10)}</small>
-                  </div>
-                  {['offered', 'accepted'].includes(t.status) && (
-                    <button
-                      disabled={locked}
-                      onClick={() => {
-                        action(
-                          { kind: t.status === 'offered' ? 'contract' : 'deliver', target: t.id },
-                          `${t.status === 'offered' ? '接受' : '交付'}${t.name}`,
-                        );
-                        setMobile('scene');
-                      }}
-                    >
-                      {t.status === 'offered' ? '与委托人签约' : '当面交付物资'}
-                      <ArrowRight size={14} />
-                    </button>
-                  )}
-                </article>
-              ))}
-            </section>
-          )}
-          {tab === 'notes' && (
-            <section className="notes">
-              <div className="context-intro">
-                <span className="eyebrow">已知信息</span>
-                <h3>情报与约定</h3>
-              </div>
-              {state.facts.map((f, i) => (
-                <p key={i}>
-                  <Flag size={13} />
-                  {f}
+              ))
+            ) : (
+              <div className="story-welcome">
+                <div className="coordinate">NEW HUGANG / 2037</div>
+                <h2>让冒险从一个人开始。</h2>
+                <p>
+                  身份、专长、装备、牵挂，以及你为什么在这里。
+                  <br />
+                  先与主持人讨论；采用档案后，把第一步写到行动板。
                 </p>
-              ))}
-              <h3>势力关系</h3>
-              {Object.entries(state.reputation).map(([k, v]) => (
-                <div className="relation" key={k}>
-                  <span>{k}</span>
-                  <b>
-                    {v > 0 ? '+' : ''}
-                    {v}
-                  </b>
+                <div className="welcome-rule">
+                  <span>01</span>创建角色
+                  <ArrowRight size={15} />
+                  <span>02</span>写下意图
+                  <ArrowRight size={15} />
+                  <span>03</span>共同裁决
                 </div>
-              ))}
-              <h3>裁定先例</h3>
-              {state.rulings.map((r) => (
-                <p key={r.id}>
-                  <b>{r.scope}</b> · {r.trigger}：{r.ruling}
-                </p>
-              ))}
-              {state.precedents.length ? (
-                state.precedents.map((p, i) => <p key={i}>{p}</p>)
-              ) : (
-                <p className="muted">尝试新的办法后，可复用的裁定会记录在这里。</p>
-              )}
-            </section>
-          )}
-        </aside>
-      </main>
-      <footer className="game-footer">
-        <span>
-          <Shield size={12} /> 自动保存 · 修订 {state.revision}
-        </span>
-        <span>房间码用于邀请新角色；当前角色凭证保存在这个浏览器。</span>
-      </footer>
-      {mapExpanded && (
-        <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
-          <section
-            className="modal expanded-map"
-            role="dialog"
-            aria-modal="true"
-            aria-label="区域地图"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="icon close"
-              aria-label="关闭区域地图"
-              onClick={() => setMapExpanded(false)}
-            >
-              <X size={20} />
-            </button>
-            <span className="eyebrow">新沪港 / 区域地图</span>
-            <Map
-              locations={state.locations}
-              routes={state.routes}
-              current={me.location}
-              selected={target.id}
-              onSelect={setSelected}
-              fogZone={state.fogZone}
-              large
-            />
-            <div className="expanded-map-detail">
-              <h3>{target.name}</h3>
-              <p>{target.description}</p>
-              {target.id !== me.location && route && (
+              </div>
+            )}
+            {state.messages.length > 0 && (
+              <details className="discussion-log">
+                <summary>
+                  <MessageCircle size={14} />
+                  场外讨论 · {state.messages.length} 条
+                </summary>
+                {state.messages.map((m) => (
+                  <p key={m.id}>
+                    <b>{m.name}</b>
+                    <span>{m.text}</span>
+                  </p>
+                ))}
+              </details>
+            )}
+            {state.run && (
+              <div className="gm-status">
+                <span className={state.run.status === 'running' ? 'signal pulse' : 'signal'} />
+                <span>
+                  {state.run.status === 'running'
+                    ? state.run.stage || '主持人正在处理这一轮'
+                    : state.run.status === 'waiting'
+                      ? '等待相关玩家回应'
+                      : (state.run.error ?? '本轮暂时中断')}
+                </span>
+              </div>
+            )}
+            {question && (
+              <form
+                className="question"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  for (const id of question.characters.filter(
+                    (c) => !question.answers[c] && answer[c]?.trim(),
+                  )) {
+                    const ok = await send('answer', {
+                      runId: state.run!.id,
+                      characterId: id,
+                      text: answer[id],
+                    });
+                    if (!ok) return;
+                  }
+                  setAnswer({});
+                }}
+              >
+                <h3>主持人需要你的决定</h3>
+                <Paragraphs text={question.prompt} />
+                {question.characters.every((c) => question.answers[c]) ? (
+                  <p>已收到你的回答，等待其他角色。</p>
+                ) : (
+                  <>
+                    {question.characters
+                      .filter((c) => !question.answers[c])
+                      .map((id) => (
+                        <label key={id}>
+                          {name(id)}的决定
+                          <textarea
+                            value={answer[id] ?? ''}
+                            onChange={(e) => setAnswer({ ...answer, [id]: e.target.value })}
+                            placeholder="说明这个角色的决定"
+                          />
+                        </label>
+                      ))}
+                    <button
+                      className="primary"
+                      disabled={
+                        busy ||
+                        !question.characters.some((c) => !question.answers[c] && answer[c]?.trim())
+                      }
+                    >
+                      回复主持人
+                    </button>
+                  </>
+                )}
+              </form>
+            )}
+            {state.run?.status === 'failed' && canResume && (
+              <button
+                className="primary resume"
+                disabled={busy}
+                onClick={() => void send('resume', { runId: state.run!.id })}
+              >
+                <Play size={15} />
+                继续本轮裁决
+              </button>
+            )}
+            <div ref={storyBottom} />
+          </div>
+          <form className="composer" onSubmit={submit}>
+            <div className="composer-top">
+              <div className="compose-tabs">
                 <button
-                  className="primary"
-                  disabled={locked}
+                  type="button"
+                  className={mode === 'action' ? 'selected' : ''}
+                  onClick={() => setMode('action')}
+                >
+                  {ready ? '提交行动' : '讨论角色'}
+                </button>
+                <button
+                  type="button"
+                  className={mode === 'discussion' ? 'selected' : ''}
+                  onClick={() => setMode('discussion')}
+                >
+                  场外讨论
+                </button>
+              </div>
+              <span>
+                {mode === 'action' ? (character?.name ?? '先创建一个角色') : '不会推进游戏时间'}
+              </span>
+            </div>
+            {editing && (
+              <div className="editing">
+                修改尚未裁决的行动
+                <button
+                  type="button"
                   onClick={() => {
-                    setMapExpanded(false);
-                    action({ kind: 'travel', target: target.id }, `前往${target.name}`);
-                    setMobile('scene');
+                    setEditing(undefined);
+                    setText('');
                   }}
                 >
-                  准备前往 · {route.minutes} 分钟
-                  <ArrowRight size={15} />
+                  取消修改
                 </button>
-              )}
+              </div>
+            )}
+            <textarea
+              aria-label={mode === 'action' ? (ready ? '你的行动' : '角色讨论') : '场外讨论'}
+              rows={4}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              maxLength={8000}
+              disabled={busy || (mode === 'action' && !character)}
+              placeholder={
+                mode === 'discussion'
+                  ? '讨论规则、整理思路，或和同伴商量。'
+                  : ready
+                    ? '描述你要做什么、如何去做，以及情况变化时的打算。'
+                    : '说说这个人的经历、专长、能力和装备，也可以提出对草案的修改。'
+              }
+            />
+            <div className="composer-bottom">
+              <div className="composer-options">
+                {ready && (
+                  <label className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={privateInput}
+                      onChange={(e) => setPrivateInput(e.target.checked)}
+                    />
+                    私密
+                  </label>
+                )}
+                {mode === 'discussion' && (
+                  <label className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={askGM}
+                      onChange={(e) => setAskGM(e.target.checked)}
+                    />
+                    请主持人回应
+                  </label>
+                )}
+                {mode === 'action' && ready && <small>提交后进入行动板，发起裁决时才执行。</small>}
+              </div>
+              <button
+                className="primary"
+                disabled={
+                  busy ||
+                  !!pending ||
+                  !text.trim() ||
+                  (mode === 'action' && (!character || (!ready && !!state.run))) ||
+                  (mode === 'discussion' && askGM && !!state.run)
+                }
+              >
+                <Send size={15} />
+                {mode === 'discussion' ? '发送' : ready ? '加入行动板' : '与主持人讨论'}
+              </button>
             </div>
+          </form>
+        </section>
+        <aside className="board-panel">
+          <div className="panel-heading">
+            <span className="eyebrow">下一批行动</span>
+            <span className="count">{state.boardCount}</span>
+          </div>
+          <h2>行动板</h2>
+          <p className="board-caption">把想做的事放在这里。可以补充、修改，等大家准备好。</p>
+          <div className="roster">
+            {state.seats.map((s) => (
+              <div key={s.id}>
+                <span className="avatar">{s.name.slice(0, 1)}</span>
+                <span>
+                  {s.name}
+                  <small>
+                    {s.characters.length} 个角色{s.host ? ' · 房主' : ''}
+                  </small>
+                </span>
+                <i className={state.submittedSeats.includes(s.id) ? 'submitted' : ''} />
+              </div>
+            ))}
+          </div>
+          <div className="board-items">
+            {state.boardCount > state.board.length && (
+              <p className="muted">
+                另有 {state.boardCount - state.board.length} 项私密行动已提交，将随本批一起裁决。
+              </p>
+            )}
+            {state.board.length ? (
+              state.board.map((a, i) => (
+                <article key={a.id} className="intent">
+                  <header>
+                    <span>{String(i + 1).padStart(2, '0')}</span>
+                    <b>{name(a.characterId)}</b>
+                    {!a.audience.includes('table') && <EyeOff size={12} />}
+                  </header>
+                  <p>{a.text}</p>
+                  {a.seatId === state.me.id && (
+                    <div className="intent-actions">
+                      <button
+                        disabled={busy}
+                        onClick={() => {
+                          setCharacterId(a.characterId);
+                          setText(a.text);
+                          setEditing(a.id);
+                          setPrivateInput(!a.audience.includes('table'));
+                          setMode('action');
+                          setMobile('story');
+                        }}
+                      >
+                        <Edit3 size={12} />
+                        修改
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => void send('withdraw', { actionId: a.id })}
+                      >
+                        撤回
+                      </button>
+                    </div>
+                  )}
+                </article>
+              ))
+            ) : (
+              <Empty icon={FileText} title={state.run ? '本批正在处理' : '等你写下第一步'}>
+                {state.run ? '你可以继续准备下一批行动。' : '同伴的行动会一起出现在这里。'}
+              </Empty>
+            )}
+          </div>
+          <div className="board-footer">
+            {state.me.host ? (
+              <>
+                <button
+                  className="primary wide"
+                  disabled={busy || !!pending || !!state.run || !state.boardCount}
+                  onClick={() => void send('run')}
+                >
+                  <Play size={16} />
+                  发起本轮裁决
+                </button>
+                {state.run?.status === 'running' && (
+                  <button
+                    className="quiet wide"
+                    disabled={busy}
+                    onClick={() => void send('stop', { runId: state.run!.id })}
+                  >
+                    <Pause size={14} />
+                    暂停主持，保留进度
+                  </button>
+                )}
+                <p>只执行已提交的意图。未提交的角色不会被默认托管。</p>
+              </>
+            ) : (
+              <p>
+                <Shield size={15} />
+                由房主发起本轮裁决。
+              </p>
+            )}
+          </div>
+        </aside>
+      </main>
+      {modal && (
+        <div className="modal-backdrop" onClick={() => setModal(null)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={modal === 'map' ? '已知地图' : modal === 'rules' ? '规则手册' : '创建角色'}
+            className={'modal ' + (modal === 'new' ? 'new-character' : '')}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span className="eyebrow">灰区 · 团桌资料</span>
+                <h2>
+                  {modal === 'map' ? '已知地图' : modal === 'rules' ? '规则手册' : '创建一个角色'}
+                </h2>
+              </div>
+              <button className="icon-button" aria-label="关闭" onClick={() => setModal(null)}>
+                <X size={22} />
+              </button>
+            </header>
+            {modal === 'map' ? (
+              <MapView records={state.records} />
+            ) : modal === 'rules' ? (
+              <Paragraphs text={rules || '正在读取…'} />
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const ok = await send('characters', { name: newName, concept });
+                  if (ok) {
+                    setModal(null);
+                    setText(concept);
+                    setNewName('');
+                    setConcept('');
+                    setMode('action');
+                  }
+                }}
+              >
+                <label>
+                  姓名
+                  <input
+                    autoFocus
+                    required
+                    maxLength={60}
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="这个人叫什么？"
+                  />
+                </label>
+                <label>
+                  最初的想法
+                  <textarea
+                    rows={6}
+                    maxLength={12000}
+                    value={concept}
+                    onChange={(e) => setConcept(e.target.value)}
+                    placeholder="经历、想找的人、擅长的事、你想玩的内容。一句话也可以。"
+                  />
+                </label>
+                <p className="muted">
+                  创建后，与主持人讨论装备、能力、关系和开场。采用档案之前可以反复修改。
+                </p>
+                <button className="primary wide" disabled={busy}>
+                  创建并继续讨论
+                  <ArrowRight size={16} />
+                </button>
+              </form>
+            )}
           </section>
         </div>
       )}
-      {rules && <Rules close={() => setRules(false)} />}
     </div>
   );
 }

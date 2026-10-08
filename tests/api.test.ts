@@ -1,205 +1,246 @@
-import test from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApp } from '../server/app.js';
-import { emptyPlan } from '../server/engine.js';
-import type { PublicState } from '../shared/types.js';
-const spec = {
-  name: '主角',
-  profile: 'mechanic',
-  school: 'none',
-  background: '测试',
-  mode: 'local',
-};
-async function cleanup(directory: string) {
-  const target = resolve(directory);
-  assert.equal(dirname(target), resolve(tmpdir()));
-  assert.match(basename(target), /^greyzone-(api|rollback|free)-/);
-  await rm(target, { recursive: true, force: true });
+import { Store, uid } from '../server/store.js';
+import { ManualDirector } from './fixtures.js';
+
+function harness() {
+  const game = createApp({
+    store: new Store(':memory:'),
+    serveStatic: false,
+    director: (s) => new ManualDirector(s),
+  });
+  const post = async (route: string, payload: Record<string, unknown> = {}, token = '') =>
+    game.app.inject({
+      method: 'POST',
+      url: route,
+      headers: { authorization: 'Bearer ' + token },
+      payload: { requestId: uid(), ...payload },
+    });
+  const create = async () => {
+    const response = await post('/api/rooms', { name: '房主' });
+    assert.equal(response.statusCode, 201);
+    return response.json() as { id: string; token: string };
+  };
+  const character = async (room: string, token: string, name: string) => {
+    const result = await post(`/api/rooms/${room}/characters`, { name }, token);
+    assert.equal(result.statusCode, 200);
+    const id = result.json().characterId as string;
+    const data = game.store.room(room);
+    data.world.records[id].data.ready = true;
+    data.world.records[id].data.specialties = ['工程'];
+    game.store.saveRoom(data);
+    return id;
+  };
+  return { ...game, post, create, character };
 }
-test('authenticated proposals, private projection, multiplayer ownership, retry receipts and restart persistence', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'greyzone-api-'));
-  let app = await createApp({ directory, serveStatic: false, die: () => 1 });
-  try {
-    const create = await app.inject({ method: 'POST', url: '/api/rooms', payload: spec });
-    assert.equal(create.statusCode, 201);
-    const r = create.json();
-    let s: PublicState = r.state;
-    const headers = { authorization: `Bearer ${r.token}` };
-    assert.equal((await app.inject({ url: `/api/rooms/${r.room}` })).statusCode, 401);
-    const joined = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/join`,
-      payload: { name: '同伴', profile: 'medic', school: 'none', background: '' },
-    });
-    assert.equal(joined.statusCode, 200);
-    const guest = joined.json();
-    s = (await app.inject({ url: `/api/rooms/${r.room}`, headers })).json();
-    const input = {
-      requestId: randomUUID(),
-      revision: s.revision,
-      intent: '前往码头',
-      command: { kind: 'travel', target: 'dock' },
-    };
-    let result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/actions`,
-      headers,
-      payload: input,
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    s = result.json();
-    assert.equal(s.minute, 0);
-    assert.ok(s.proposal);
-    assert.ok(!('success' in s.proposal));
-    result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/actions`,
-      headers,
-      payload: input,
-    });
-    assert.equal(result.statusCode, 200);
-    assert.equal(result.json().revision, s.revision);
-    const decision = {
-      requestId: randomUUID(),
-      revision: s.revision,
-      proposalId: s.proposal!.id,
-      decision: 'confirm',
-    };
-    result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/decisions`,
-      headers: { authorization: `Bearer ${guest.token}` },
-      payload: decision,
-    });
-    assert.equal(result.statusCode, 403);
-    result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/decisions`,
-      headers,
-      payload: decision,
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    s = result.json();
-    assert.equal(s.minute, 20);
-    assert.equal(s.characters[1].location, 'town');
-    result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/decisions`,
-      headers,
-      payload: decision,
-    });
-    assert.equal(result.statusCode, 200);
-    assert.equal(result.json().minute, 20);
-    assert.equal(result.json().revision, s.revision);
-    const raw = await readFile(join(directory, `${r.room}.json`), 'utf8');
-    assert.ok(!raw.includes(r.token));
-    await app.close();
-    app = await createApp({ directory, serveStatic: false });
-    assert.equal((await app.inject({ url: `/api/rooms/${r.room}`, headers })).json().minute, 20);
-  } finally {
-    await app.close();
-    await cleanup(directory);
+
+test('1—6 席位、一人多角、角色所有权与房主裁决权限', async (t) => {
+  const h = harness();
+  t.after(() => h.app.close());
+  const room = await h.create(),
+    guests: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const r = await h.post(`/api/rooms/${room.id}/join`, { name: '玩家' + i });
+    assert.equal(r.statusCode, 200);
+    guests.push(r.json().token);
   }
-});
-test('model failure and invalid resource effects do not commit world changes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'greyzone-rollback-'));
-  const app = await createApp({
-    directory,
-    serveStatic: false,
-    director: {
-      async plan() {
-        const p = emptyPlan('捏造资源');
-        p.costs = [{ itemId: 'does-not-exist', quantity: 1 }];
-        return p;
-      },
-    },
-  });
-  try {
-    const r = (await app.inject({ method: 'POST', url: '/api/rooms', payload: spec })).json(),
-      headers = { authorization: `Bearer ${r.token}` };
-    const result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/actions`,
-      headers,
-      payload: { requestId: randomUUID(), revision: 0, intent: '随便做点什么' },
-    });
-    assert.equal(result.statusCode, 400);
-    const s = (await app.inject({ url: `/api/rooms/${r.room}`, headers })).json();
-    assert.equal(s.minute, 0);
-    assert.equal(s.revision, 0);
-    assert.equal(s.proposal, null);
-    assert.equal(s.characters[0].cash, 300);
-  } finally {
-    await app.close();
-    await cleanup(directory);
-  }
-});
-test('free AI adjudication persists custom objects without an action whitelist', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'greyzone-free-'));
-  const app = await createApp({
-    directory,
-    serveStatic: false,
-    die: () => 1,
-    director: {
-      async plan(_s, _id, intent) {
-        assert.ok(intent.includes('警报'));
-        const p = emptyPlan('制作机械警报', 20);
-        p.skill = 'technical';
-        p.costs = [
-          { itemId: 'wire', quantity: 1 },
-          { itemId: 'scrap', quantity: 1 },
-        ];
-        p.success.effects = [
-          {
-            type: 'create',
-            item: {
-              id: 'custom-alarm',
-              name: '罐片警报',
-              quantity: 1,
-              weight: 0.3,
-              value: 25,
-              kind: 'gear',
-              description: '拉动即响。',
-            },
-            basis: '钢丝和罐片',
-          },
-        ];
-        return p;
-      },
-    },
-  });
-  try {
-    const r = (await app.inject({ method: 'POST', url: '/api/rooms', payload: spec })).json(),
-      headers = { authorization: `Bearer ${r.token}` };
-    const plan = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/actions`,
-      headers,
-      payload: { requestId: randomUUID(), revision: 0, intent: '用细钢丝做一个警报' },
-    });
-    assert.equal(plan.statusCode, 200, plan.body);
-    const s = plan.json();
-    const result = await app.inject({
-      method: 'POST',
-      url: `/api/rooms/${r.room}/decisions`,
-      headers,
-      payload: {
-        requestId: randomUUID(),
-        revision: s.revision,
-        proposalId: s.proposal.id,
-        decision: 'confirm',
-      },
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    assert.ok(
-      result.json().characters[0].inventory.some((i: { id: string }) => i.id === 'custom-alarm'),
+  assert.equal((await h.post(`/api/rooms/${room.id}/join`, { name: '第七人' })).statusCode, 400);
+  const p1 = await h.character(room.id, room.token, '甲'),
+    p2 = await h.character(room.id, room.token, '乙'),
+    p3 = await h.character(room.id, guests[0], '丙');
+  assert.equal(h.store.seats(room.id)[0].characters.length, 2);
+  assert.equal(
+    (await h.post(`/api/rooms/${room.id}/board`, { characterId: p3, text: '偷控角色' }, room.token))
+      .statusCode,
+    403,
+  );
+  assert.equal((await h.post(`/api/rooms/${room.id}/run`, {}, guests[0])).statusCode, 403);
+  for (const pc of [p1, p2])
+    assert.equal(
+      (
+        await h.post(
+          `/api/rooms/${room.id}/board`,
+          { characterId: pc, text: '各自配合' },
+          room.token,
+        )
+      ).statusCode,
+      200,
     );
-  } finally {
-    await app.close();
-    await cleanup(directory);
-  }
+  const run = await h.post(`/api/rooms/${room.id}/run`, {}, room.token);
+  assert.equal(run.statusCode, 200);
+  assert.equal(h.store.run(run.json().runId).actions.length, 2);
+});
+
+test('冻结批次不接纳后续编辑，下一批行动独立；API 重试只启动一轮', async (t) => {
+  const h = harness();
+  t.after(() => h.app.close());
+  const room = await h.create(),
+    pc = await h.character(room.id, room.token, '甲');
+  const action = await h.post(
+    `/api/rooms/${room.id}/board`,
+    { characterId: pc, text: '先观察' },
+    room.token,
+  );
+  const payload = { requestId: 'same-run' };
+  const first = await h.post(`/api/rooms/${room.id}/run`, payload, room.token),
+    retry = await h.post(`/api/rooms/${room.id}/run`, payload, room.token);
+  assert.deepEqual(first.json(), retry.json());
+  assert.equal(
+    (
+      await h.post(
+        `/api/rooms/${room.id}/board`,
+        { characterId: pc, actionId: action.json().actionId, text: '改已冻结行动' },
+        room.token,
+      )
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await h.post(
+        `/api/rooms/${room.id}/withdraw`,
+        { actionId: action.json().actionId },
+        room.token,
+      )
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await h.post(
+        `/api/rooms/${room.id}/board`,
+        { characterId: pc, text: '下一轮撤退' },
+        room.token,
+      )
+    ).statusCode,
+    200,
+  );
+  assert.equal(h.store.active(room.id)?.actions[0].text, '先观察');
+  assert.equal(h.store.room(room.id).board[0].text, '下一轮撤退');
+  assert.equal((await h.post(`/api/rooms/${room.id}/run`, {}, room.token)).statusCode, 409);
+});
+
+test('私密讨论、私密问题、回答与暂停后的恢复均验证角色权限', async (t) => {
+  const h = harness();
+  t.after(() => h.app.close());
+  const room = await h.create();
+  const guest = (await h.post(`/api/rooms/${room.id}/join`, { name: '同伴' })).json();
+  const a = await h.character(room.id, room.token, '甲'),
+    b = await h.character(room.id, guest.token, '乙');
+  await h.post(
+    `/api/rooms/${room.id}/messages`,
+    { text: 'PRIVATE', characterId: b, private: true, askGM: true },
+    guest.token,
+  );
+  const run = h.store.active(room.id)!;
+  assert.deepEqual(run.responseAudience, [b]);
+  h.tools.call('turn_ask', { key: 'ask', prompt: 'PRIVATE QUESTION', characters: [b] }, run.id);
+  const view = await h.app.inject({
+    url: `/api/rooms/${room.id}`,
+    headers: { authorization: 'Bearer ' + room.token },
+  });
+  assert.ok(!view.body.includes('PRIVATE'));
+  assert.equal(
+    (
+      await h.post(
+        `/api/rooms/${room.id}/answer`,
+        { runId: run.id, characterId: a, text: '代答' },
+        room.token,
+      )
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await h.post(
+        `/api/rooms/${room.id}/answer`,
+        { runId: run.id, characterId: b, text: '由我决定' },
+        guest.token,
+      )
+    ).statusCode,
+    200,
+  );
+  const resumed = h.store.run(run.id);
+  assert.equal(resumed.status, 'running');
+  assert.equal(resumed.metrics.resumptions, 1);
+  const after = await h.app.inject({
+    url: `/api/rooms/${room.id}`,
+    headers: { authorization: 'Bearer ' + guest.token },
+  });
+  assert.equal(after.json().run.question, undefined);
+  await h.post(`/api/rooms/${room.id}/stop`, { runId: run.id }, room.token);
+  assert.equal(h.store.run(run.id).status, 'failed');
+  assert.equal(
+    (await h.post(`/api/rooms/${room.id}/resume`, { runId: run.id }, guest.token)).statusCode,
+    200,
+  );
+});
+
+test('真实 MCP HTTP 握手、工具发现和调用；未经授权无法连接', async (t) => {
+  const h = harness();
+  t.after(() => h.app.close());
+  const room = await h.create(),
+    pc = await h.character(room.id, room.token, '甲');
+  await h.post(`/api/rooms/${room.id}/board`, { characterId: pc, text: '检查门锁' }, room.token);
+  await h.post(`/api/rooms/${room.id}/run`, {}, room.token);
+  const url = await h.app.listen({ host: '127.0.0.1', port: 0 });
+  h.setUrl(url);
+  assert.equal(
+    (await h.app.inject({ method: 'POST', url: `/internal/mcp/${room.id}`, payload: {} }))
+      .statusCode,
+    403,
+  );
+  const client = new Client({ name: 'protocol-test', version: '1.0' }),
+    transport = new StreamableHTTPClientTransport(new URL(`${url}/internal/mcp/${room.id}`), {
+      requestInit: { headers: { Authorization: 'Bearer test-mcp-token' } },
+    });
+  await client.connect(transport);
+  t.after(() => client.close());
+  const tools = await client.listTools();
+  assert.deepEqual(
+    tools.tools.map((t) => t.name).sort(),
+    [
+      'context_get',
+      'context_search',
+      'checks_resolve',
+      'state_apply',
+      'time_advance',
+      'turn_commit',
+      'turn_ask',
+    ].sort(),
+  );
+  const context = await client.callTool({ name: 'context_get', arguments: { ids: [pc] } });
+  assert.equal(context.isError, undefined);
+  assert.ok(JSON.stringify(context).includes(pc));
+  const fail = await client.callTool({
+    name: 'time_advance',
+    arguments: { key: 'bad', minutes: -1, reason: '不允许倒退' },
+  });
+  assert.equal(fail.isError, true);
+});
+
+test('全批都是其他人的私密行动时，房主获知待裁决数量但看不到内容', async (t) => {
+  const h = harness();
+  t.after(() => h.app.close());
+  const room = await h.create();
+  const guest = (await h.post(`/api/rooms/${room.id}/join`, { name: '同伴' })).json();
+  const pc = await h.character(room.id, guest.token, '乙');
+  await h.post(
+    `/api/rooms/${room.id}/board`,
+    { characterId: pc, text: 'PRIVATE-ONLY', private: true },
+    guest.token,
+  );
+  const view = (
+    await h.app.inject({
+      url: `/api/rooms/${room.id}`,
+      headers: { authorization: 'Bearer ' + room.token },
+    })
+  ).json();
+  assert.equal(view.boardCount, 1);
+  assert.equal(view.board.length, 0);
+  assert.ok(!JSON.stringify(view).includes('PRIVATE-ONLY'));
+  assert.equal((await h.post(`/api/rooms/${room.id}/run`, {}, room.token)).statusCode, 200);
 });

@@ -1,0 +1,592 @@
+[
+  {
+    "id": "fence",
+    "kind": "place",
+    "name": "围栏镇",
+    "audience": ["table"],
+    "data": {
+      "region": "南缘边界",
+      "description": "隔离带内侧的旧工业服务镇。道路、诊所、修理铺和私人住处挤在一起。两三百人依靠回收、运输和给人修东西生活。",
+      "links": ["industry", "coast"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "industry",
+    "kind": "place",
+    "name": "工业外缘",
+    "audience": ["table"],
+    "data": {
+      "region": "工业港",
+      "description": "石化厂、码头和旧药厂之间有公路、排水渠与工人便道。设施长期失修，雨后水路会改变可通行的地方。",
+      "links": ["fence", "dock", "refinery", "pharmacy", "checkpoint"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "ruins",
+    "kind": "place",
+    "name": "城镇废墟",
+    "audience": ["table"],
+    "data": {
+      "region": "旧城区",
+      "description": "居民楼、商业街、警察总局和通讯站仍保留原来的路网，塌楼和聚落会堵住道路。",
+      "links": ["industry", "coast", "market", "police", "radio", "wild"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "wild",
+    "kind": "place",
+    "name": "异常荒野",
+    "audience": ["table"],
+    "data": {
+      "region": "内陆荒野",
+      "description": "旧采石场和植被覆盖的丘陵。异常位置并不固定，现有路线要结合地形、近期记录和实地观察。",
+      "links": ["ruins", "quarry", "highland", "underground"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "underground",
+    "kind": "place",
+    "name": "地下研究设施",
+    "audience": [],
+    "data": {
+      "region": "地下",
+      "description": "UEG 的分区研究设施仍有独立电源和自动保安。地下管道连接不同建筑，但不是每条都能容人通行。",
+      "links": ["lab-a", "lab-b", "observatory", "well"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "well",
+    "kind": "place",
+    "name": "零号井",
+    "audience": [],
+    "data": {
+      "region": "外海人工岛",
+      "description": "裂隙原点所在的工程井。旧检修栈桥、动力室与核心控制室仍是物理设施，需要供电、权限和能够工作的设备。",
+      "links": ["observatory"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "dock",
+    "kind": "place",
+    "name": "集装箱码头",
+    "audience": [],
+    "data": {
+      "region": "工业港",
+      "description": "堆场、岸桥和沉没的货驳。南侧维修栈桥可下水，潮汐会改变下层通道的安全。",
+      "links": ["industry", "coast"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "refinery",
+    "kind": "place",
+    "name": "石化工厂",
+    "audience": [],
+    "data": {
+      "region": "工业港",
+      "description": "储罐区与独立泵房相连。阀门、残留化学品和受损电缆各有实际作用，厂内仍可能保有运输设备。",
+      "links": ["industry"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "pharmacy",
+    "kind": "place",
+    "name": "旧药厂",
+    "audience": [],
+    "data": {
+      "region": "工业港",
+      "description": "仓库的成药大多过期，干燥耗材和可维修设备仍有价值。冷库门后的温度和供电状况需要实查。",
+      "links": ["industry", "lab-a"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "checkpoint",
+    "kind": "place",
+    "name": "军事哨站",
+    "audience": [],
+    "data": {
+      "region": "工业外缘",
+      "description": "撤编前的检查站，公路有废弃路障。岗楼可以观察外围道路，地下通信间仍有蓄电池。",
+      "links": ["industry"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "coast",
+    "kind": "place",
+    "name": "沿海小镇",
+    "audience": [],
+    "data": {
+      "region": "城镇废墟",
+      "description": "渔港和高处民居仍住着人。海路可以绕开公路检查，但燃料、潮汐与船体状态决定能走多远。",
+      "links": ["fence", "dock", "ruins"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "market",
+    "kind": "place",
+    "name": "中央商业街",
+    "audience": [],
+    "data": {
+      "region": "城镇废墟",
+      "description": "商场夹在两条主路间，屋顶连廊与地下装卸区提供不同通行方式。街上有人收取过路物资。",
+      "links": ["ruins", "police"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "police",
+    "kind": "place",
+    "name": "警察总局",
+    "audience": [],
+    "data": {
+      "region": "城镇废墟",
+      "description": "档案库和证物库没有一同被搬空。楼内有纸质地图、拘留区与断电门禁。",
+      "links": ["market", "radio"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "radio",
+    "kind": "place",
+    "name": "废弃通讯站",
+    "audience": [],
+    "data": {
+      "region": "城镇废墟",
+      "description": "山坡上的中继站邻近守望者前哨。能否修复取决于供电、馈线与设备完整度。",
+      "links": ["ruins", "wild"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "quarry",
+    "kind": "place",
+    "name": "旧采石场",
+    "audience": [],
+    "data": {
+      "region": "异常荒野",
+      "description": "坑底积水，运输坡道绕行数公里。旧起重设备仍有承重铭牌，崩落岩层中夹有结晶。",
+      "links": ["wild", "highland"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "highland",
+    "kind": "place",
+    "name": "开阔高地",
+    "audience": [],
+    "data": {
+      "region": "异常荒野",
+      "description": "风口可远望工业港和内陆雾线。暴露地形便于观察，也难以隐藏车辆。",
+      "links": ["wild", "quarry", "observatory"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "lab-a",
+    "kind": "place",
+    "name": "地下实验室 A 区",
+    "audience": [],
+    "data": {
+      "region": "地下",
+      "description": "医学和生物研究区。培养室、手术室、冷藏库相互隔离，过滤和供电可以局部恢复。",
+      "links": ["pharmacy", "underground", "lab-b"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "lab-b",
+    "kind": "place",
+    "name": "地下实验室 B 区",
+    "audience": [],
+    "data": {
+      "region": "地下",
+      "description": "材料与能源研究区，精炼设备仍有备件和操作记录。低级结晶能否加工取决于设施与工艺。",
+      "links": ["underground", "lab-a", "observatory"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "observatory",
+    "kind": "place",
+    "name": "维度交汇观测站",
+    "audience": [],
+    "data": {
+      "region": "地下",
+      "description": "观测仪、远程控制链和人工记录存在版本差异。这里能帮助判断裂隙状态，不能直接代替修复核心设施。",
+      "links": ["highland", "lab-b", "well"]
+    },
+    "secret": ""
+  },
+  {
+    "id": "gao",
+    "kind": "npc",
+    "name": "老高",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "军火商",
+      "description": "靠维修、拆件和熟客信用维持生意，愿意收来源说得清的设备。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["军火商"],
+      "resources": {
+        "cash": 600
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "一批答应交付的枪械配件仍在码头，承运人已失联两天。不会为陌生人免费发装备。"
+  },
+  {
+    "id": "zheng",
+    "kind": "npc",
+    "name": "老郑",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "医生",
+      "description": "诊所接受物资抵费；会先说明能做什么、缺什么，危急救治可以形成真实的欠款协商。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["医生"],
+      "resources": {
+        "cash": 180
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "清创用品够一周，发电机冷却泵故障；担心同行走漏库存而引来勒索。"
+  },
+  {
+    "id": "saw",
+    "kind": "npc",
+    "name": "锯子",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "机械师",
+      "description": "熟悉工业设备，会帮助评估制造想法。材料、设备与工时需要具体安排。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["机械师"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "想恢复码头的小车床，缺直流控制器，愿意用工时交换。"
+  },
+  {
+    "id": "crow",
+    "kind": "npc",
+    "name": "鸦",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "情报贩子",
+      "description": "卖来源与可信程度不同的消息，重视持续关系。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["情报贩子"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "收到两份互相矛盾的零号井运输单，尚未辨清谁在伪造。"
+  },
+  {
+    "id": "fang",
+    "kind": "npc",
+    "name": "方远",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "铁壁联络员",
+      "description": "安排运输、回收和护送合同，会说明付款条件。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["铁壁联络员"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "上级要求摸清回收者的船只和燃料；会尝试委托，不能默认玩家答应。"
+  },
+  {
+    "id": "zhou",
+    "kind": "npc",
+    "name": "周若冰",
+    "audience": [],
+    "data": {
+      "location": "radio",
+      "role": "守望者扎根派",
+      "description": "先考虑社区粮食、防卫和病人，警惕公司以帮助为由索取控制权。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["守望者扎根派"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "共鸣正在干扰睡眠，压抑症状；担心老吕单独进入地下。"
+  },
+  {
+    "id": "lv",
+    "kind": "npc",
+    "name": "老吕",
+    "audience": [],
+    "data": {
+      "location": "radio",
+      "role": "守望者回归派",
+      "description": "懂裂隙相关设施，想查清可以关闭它的条件。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["守望者回归派"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "只掌握旧版控制原理，还缺实时测量数据和核心权限。"
+  },
+  {
+    "id": "jin",
+    "kind": "npc",
+    "name": "烬",
+    "audience": [],
+    "data": {
+      "location": "quarry",
+      "role": "守望者启示派",
+      "description": "主动调查镜界现象，愿意拿观察记录交换同行机会。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["守望者启示派"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "相信镜界现象可能构成交流，但记录也有误判；不能被叙述直接证明永远正确。"
+  },
+  {
+    "id": "chen",
+    "kind": "npc",
+    "name": "电鳗陈",
+    "audience": [],
+    "data": {
+      "location": "dock",
+      "role": "独立回收者",
+      "description": "擅长排查电路，靠熟悉的水边路线运货。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["独立回收者"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "搭档陷在涨水的泵房，自己不愿让竞争者知道货的位置。"
+  },
+  {
+    "id": "ye",
+    "kind": "npc",
+    "name": "叶琳",
+    "audience": [],
+    "data": {
+      "location": "coast",
+      "role": "独立向导",
+      "description": "行事安静，对本地居民守约，愿意带路也会拒绝不合理要求。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["独立向导"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "避开一条便道，是因为曾在那里失去队友；路线危险尚未被她查清。"
+  },
+  {
+    "id": "iron",
+    "kind": "npc",
+    "name": "铁心",
+    "audience": [],
+    "data": {
+      "location": "checkpoint",
+      "role": "退役护卫",
+      "description": "靠押车生活，重视明确指令和撤退条件。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["退役护卫"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "盔甲关节有裂损，正寻找可靠的维修者。"
+  },
+  {
+    "id": "lin",
+    "kind": "npc",
+    "name": "林岚",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "龙盾技术员",
+      "description": "收购技术资料，提供有价的检测、加工和设备服务。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["龙盾技术员"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "龙盾正在争取老吕的信任，希望取得设备操作权。"
+  },
+  {
+    "id": "castro",
+    "kind": "npc",
+    "name": "卡斯特罗",
+    "audience": [],
+    "data": {
+      "location": "fence",
+      "role": "黑水联络人",
+      "description": "争取有能力的队伍，条件优厚但有排他条款。",
+      "stats": {
+        "body": 1,
+        "agility": 1,
+        "perception": 2,
+        "mind": 2
+      },
+      "specialties": ["黑水联络人"],
+      "resources": {
+        "cash": 100
+      },
+      "conditions": [],
+      "status": "active"
+    },
+    "secret": "计划抢占内陆运输点，优先控制燃料而不是无意义杀人。"
+  },
+  {
+    "id": "wall",
+    "kind": "faction",
+    "name": "铁壁安保",
+    "audience": ["table"],
+    "data": {
+      "description": "发行灰币，经营围栏镇的合同、补给和诊所设施。"
+    },
+    "secret": "目标是稳定回收收入及控制运输，随着损失增加会缩减经营，但具体取决于实际局势。"
+  },
+  {
+    "id": "ueg",
+    "kind": "faction",
+    "name": "UEG",
+    "audience": ["table"],
+    "data": {
+      "description": "引发灾变的联合能源集团，对外宣称设施已废弃。"
+    },
+    "secret": "深处仍运行采掘、精炼与自动防御设施。它也不完全理解黑潮，正在搜集数据。"
+  },
+  {
+    "id": "blackwater",
+    "kind": "faction",
+    "name": "黑水亚洲",
+    "audience": ["table"],
+    "data": {
+      "description": "更激进的承包商，会与其他公司争夺路线和人手。"
+    },
+    "secret": "倾向控制运输及高价值物资；可以合作、谈判、收买，并非见人便打。"
+  },
+  {
+    "id": "dragon",
+    "kind": "faction",
+    "name": "龙盾国际",
+    "audience": ["table"],
+    "data": {
+      "description": "提供昂贵的技术、装备和情报服务。"
+    },
+    "secret": "希望控制异常加工的技术入口，但依赖可靠样本与本地知识。"
+  },
+  {
+    "id": "watchers",
+    "kind": "faction",
+    "name": "守望者",
+    "audience": ["table"],
+    "data": {
+      "description": "原住民及留居者，维护彼此的聚落与路线。"
+    },
+    "secret": "扎根、回归、启示三派目标冲突，但共有亲友和生存需要。"
+  }
+]

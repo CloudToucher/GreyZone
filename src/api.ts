@@ -1,87 +1,77 @@
-import type { PublicState, SessionCredentials } from '../shared/types';
-export type ActionResult = 'committed' | 'refresh' | 'retry';
-export function makeRequestId(): string {
-  // getRandomValues also works on HTTP LAN origins, unlike crypto.randomUUID.
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 15) | 64;
-  bytes[8] = (bytes[8] & 63) | 128;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+import type { PublicState } from '../shared/types';
+export interface Access {
+  id: string;
+  token: string;
+  name?: string;
 }
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number,
+    public status = 0,
   ) {
     super(message);
   }
 }
-export async function api<T>(
-  path: string,
-  body?: unknown,
-  credentials?: SessionCredentials,
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: {
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      ...(credentials ? { Authorization: `Bearer ${credentials.token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+export async function api<T>(path: string, access?: Access, body?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: {
+        ...(access ? { Authorization: `Bearer ${access.token}` } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError('连接暂时中断。可以重试原请求。');
+  }
   const data = await response.json();
-  if (!response.ok) throw new ApiError(data.error ?? '连接中断，请重试。', response.status);
-  return data as T;
+  if (!response.ok) throw new ApiError(data.error ?? '请求失败', response.status);
+  return data;
 }
 export async function subscribe(
-  credentials: SessionCredentials,
+  access: Access,
   signal: AbortSignal,
   update: (state: PublicState) => void,
-  connected: (value: boolean) => void,
-): Promise<void> {
+  connected: (yes: boolean) => void,
+) {
   while (!signal.aborted) {
     try {
-      const response = await fetch(`/api/rooms/${credentials.room}/events`, {
-        headers: { Authorization: `Bearer ${credentials.token}` },
+      const response = await fetch(`/api/rooms/${access.id}/events`, {
+        headers: { Authorization: `Bearer ${access.token}` },
         signal,
       });
-      if (!response.ok || !response.body) throw new Error('stream failed');
+      if (!response.ok) throw new Error('stream');
       connected(true);
-      const reader = response.body.getReader(),
+      const reader = response.body!.getReader(),
         decoder = new TextDecoder();
       let buffer = '';
-      try {
-        while (!signal.aborted) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let index: number;
-          while ((index = buffer.indexOf('\n\n')) >= 0) {
-            const message = buffer.slice(0, index);
-            buffer = buffer.slice(index + 2);
-            if (message.startsWith('data: ')) update(JSON.parse(message.slice(6)) as PublicState);
-          }
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) break;
+        buffer += decoder.decode(result.value, { stream: true });
+        while (buffer.includes('\n\n')) {
+          const end = buffer.indexOf('\n\n'),
+            event = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          if (event.startsWith('data: ')) update(JSON.parse(event.slice(6)));
         }
-      } finally {
-        await reader.cancel().catch(() => {});
       }
     } catch {
-      /* reconnect using a fresh authoritative snapshot */
+      if (signal.aborted) return;
     }
     connected(false);
-    if (!signal.aborted)
-      await new Promise<void>((resolve) => {
-        const onAbort = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        const timer = setTimeout(() => {
-          signal.removeEventListener('abort', onAbort);
-          resolve();
-        }, 2500);
-        signal.addEventListener('abort', onAbort, { once: true });
-      });
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, 2000);
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(t);
+          r();
+        },
+        { once: true },
+      );
+    });
   }
 }

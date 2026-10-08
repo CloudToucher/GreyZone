@@ -1,23 +1,27 @@
 {
-  "name": "greyzone-extraction",
-  "version": "2.0.0",
+  "name": "greyzone-table",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.16"
   },
   "scripts": {
-    "dev": "concurrently -k -n world,client -c cyan,green \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
     "test": "tsx --test tests/*.test.ts",
-    "test:ui": "playwright test",
     "check": "npm run build && npm test",
+    "test:ui": "playwright test",
     "doctor": "tsx scripts/doctor.ts",
-    "format": "prettier --write \"{src,server,shared,scripts,tests}/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\""
+    "test:live": "tsx scripts/live-campaign.ts",
+    "test:live:multiplayer": "tsx scripts/live-multiplayer.ts",
+    "report:live": "tsx scripts/report-live.ts",
+    "format": "prettier --write server shared src tests scripts runtime content docs README.md"
   },
   "dependencies": {
     "@fastify/static": "^8.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fastify": "^5.6.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",

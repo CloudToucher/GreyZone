@@ -1,180 +1,260 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { z } from 'zod';
-import { sessionSchema, type SessionState } from '../shared/types.js';
-import { GameError } from './engine.js';
-export interface Seat {
-  tokenHash: string;
-  characterId: string;
-  host: boolean;
-}
-export interface SavedRoom {
-  format: 2;
-  state: SessionState;
-  seats: Seat[];
-  receipts: { id: string; actorId: string }[];
-}
-const roomSchema = z.object({
-  format: z.literal(2),
-  state: sessionSchema,
-  seats: z
-    .array(
-      z.object({
-        tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
-        characterId: z.string(),
-        host: z.boolean(),
-      }),
-    )
-    .min(1)
-    .max(4),
-  receipts: z.array(z.object({ id: z.string().uuid(), actorId: z.string() })).max(128),
-});
-export function validateRoom(raw: unknown): SavedRoom {
-  const room = roomSchema.parse(raw),
-    s = room.state;
-  if (
-    new Set(s.characters.map((c) => c.id)).size !== s.characters.length ||
-    room.seats.length !== s.characters.length ||
-    room.seats.filter((x) => x.host).length !== 1 ||
-    new Set(room.seats.map((x) => x.characterId)).size !== room.seats.length ||
-    room.seats.some((x) => !s.characters.some((c) => c.id === x.characterId))
-  )
-    throw new Error('Invalid seats');
-  const ids = s.locations.map((l) => l.id);
-  if (
-    new Set(s.entities.map((e) => e.id)).size !== s.entities.length ||
-    s.characters.some((c) => !ids.includes(c.location)) ||
-    s.entities.some((e) => !ids.includes(e.location)) ||
-    s.routes.some((r) => !ids.includes(r.from) || !ids.includes(r.to))
-  )
-    throw new Error('Invalid world references');
-  for (const c of [...s.characters, ...s.entities])
-    if (
-      new Set(c.inventory.map((i) => i.id)).size !== c.inventory.length ||
-      c.inventory.some((i) => i.weapon && i.weapon.loaded > i.weapon.capacity)
-    )
-      throw new Error('Invalid inventory');
-  if (s.proposal && !s.characters.some((c) => c.id === s.proposal!.actorId))
-    throw new Error('Invalid proposal');
-  for (const [id, workshop] of Object.entries(s.workshops)) {
-    const c = s.characters.find((c) => c.id === id);
-    if (!c || workshop.accepted !== c.ready)
-      throw new Error('Invalid workshop owner or adoption state');
-  }
-  if (s.characters.some((c) => !c.ready && !s.workshops[c.id]))
-    throw new Error('Unformed character without workshop');
-  for (const [id, proposal] of Object.entries(s.sheetProposals))
-    if (proposal.actorId !== id || !s.characters.some((c) => c.ready && c.id === id))
-      throw new Error('Invalid sheet proposal owner');
-  return room;
-}
-export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
-export const newToken = () => randomBytes(32).toString('hex');
+import { DatabaseSync } from 'node:sqlite';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { dirname } from 'node:path';
+import type { Campaign, Run, Seat, Roll } from '../shared/types.js';
 
-export class Store {
-  private rooms = new Map<string, SavedRoom>();
-  private locks = new Set<string>();
-  private lockIdentity = randomUUID();
-  private ownsLock = false;
-  constructor(readonly directory: string) {
-    this.directory = resolve(directory);
+export class Fault extends Error {
+  constructor(
+    message: string,
+    public status = 400,
+  ) {
+    super(message);
   }
-  async init(): Promise<void> {
-    await mkdir(this.directory, { recursive: true });
-    const lockFile = join(this.directory, 'server.lock');
-    try {
-      const lock = await open(lockFile, 'wx', 0o600);
-      await lock.writeFile(JSON.stringify({ pid: process.pid, identity: this.lockIdentity }));
-      await lock.close();
-      this.ownsLock = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const prior = JSON.parse(await readFile(lockFile, 'utf8')) as { pid: number };
-      let alive = true;
-      try {
-        process.kill(prior.pid, 0);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'ESRCH') alive = false;
-      }
-      if (alive)
-        throw new Error('此存档目录已被另一个服务占用。请关闭原进程或使用另一个 DATA_DIR。');
-      await rm(lockFile);
-      return this.init();
-    }
-    try {
-      for (const file of await readdir(this.directory)) {
-        if (!/^[A-Z0-9]{6}\.json$/.test(file)) continue;
+}
+export const uid = (prefix = 'id') => `${prefix}-${randomUUID().slice(0, 12)}`;
+export const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const stableJson = (value: unknown): string =>
+  JSON.stringify(value, (_key, v) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, v[k]]),
+        )
+      : v,
+  );
+export class Store {
+  db: DatabaseSync;
+  private lock?: string;
+  constructor(path: string) {
+    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    if (path !== ':memory:') {
+      this.lock = path + '.lock';
+      for (let attempt = 0; ; attempt++) {
         try {
-          const raw = JSON.parse(await readFile(join(this.directory, file), 'utf8'));
-          if (raw.format === 1) {
-            const archive = join(this.directory, 'legacy-v1');
-            await mkdir(archive, { recursive: true });
-            await rename(join(this.directory, file), join(archive, `${Date.now()}-${file}`));
-            continue;
+          writeFileSync(this.lock, String(process.pid), { flag: 'wx' });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt > 1) throw error;
+          const pid = Number(readFileSync(this.lock, 'utf8'));
+          let alive = true;
+          try {
+            if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid lock');
+            process.kill(pid, 0);
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'ESRCH') alive = false;
+            else throw new Fault('存档锁无法核实，请检查对应服务进程。', 409);
           }
-          const room = validateRoom(raw);
-          if (`${room.state.id}.json` !== file) throw new Error('Room id mismatch');
-          this.rooms.set(room.state.id, room);
-        } catch {
-          throw new Error(`存档 ${file} 校验失败。原文件已保留，请从备份恢复，不会自动覆盖。`);
+          if (alive)
+            throw new Fault('这个存档目录已有服务运行。请使用已有服务或另一个 DATA_DIR。', 409);
+          unlinkSync(this.lock);
         }
       }
+    }
+    try {
+      this.db = new DatabaseSync(path);
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS campaigns(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS seats(id TEXT PRIMARY KEY, room TEXT NOT NULL REFERENCES campaigns(id), token TEXT UNIQUE NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, room TEXT NOT NULL REFERENCES campaigns(id), status TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE UNIQUE INDEX IF NOT EXISTS one_open_run ON runs(room) WHERE status!='completed';
+      CREATE TABLE IF NOT EXISTS receipts(scope TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(scope,key));
+      CREATE TABLE IF NOT EXISTS rolls(run TEXT NOT NULL REFERENCES runs(id), id TEXT NOT NULL, fingerprint TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run,id));
+      CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, room TEXT NOT NULL, run TEXT, checkpoint INTEGER, data TEXT NOT NULL, created TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS metrics(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS record_index(room TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, fingerprint TEXT NOT NULL, updated TEXT NOT NULL, refs TEXT NOT NULL, PRIMARY KEY(room,id));
+      CREATE INDEX IF NOT EXISTS record_kind ON record_index(room,kind);
+      PRAGMA user_version=3;`);
+      for (const row of this.db.prepare("SELECT data FROM runs WHERE status='running'").all()) {
+        const run = JSON.parse(String(row.data)) as Run;
+        run.status = 'failed';
+        run.error = '主持进程已中断，可以继续本轮。';
+        this.saveRun(run);
+      }
+      for (const row of this.db.prepare('SELECT data FROM campaigns').all())
+        this.indexRecords(JSON.parse(String(row.data)));
     } catch (error) {
-      await this.close();
+      if (this.lock) unlinkSync(this.lock);
       throw error;
     }
   }
-  async close(): Promise<void> {
-    if (!this.ownsLock) return;
-    const file = join(this.directory, 'server.lock');
+  transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
     try {
-      const lock = JSON.parse(await readFile(file, 'utf8'));
-      if (lock.identity === this.lockIdentity) await rm(file);
-    } finally {
-      this.ownsLock = false;
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
     }
   }
-  get(id: string): SavedRoom {
-    const room = this.rooms.get(id);
-    if (!room) throw new GameError('房间不存在，请检查六位房间码。', 404);
-    return structuredClone(room);
+  room(id: string): Campaign {
+    const row = this.db.prepare('SELECT data FROM campaigns WHERE id=?').get(id);
+    if (!row) throw new Fault('这个团桌不存在。', 404);
+    return JSON.parse(String(row.data));
   }
-  has(id: string): boolean {
-    return this.rooms.has(id);
+  saveRoom(room: Campaign) {
+    this.db
+      .prepare('INSERT INTO campaigns VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
+      .run(room.id, JSON.stringify(room));
+    this.indexRecords(room);
   }
-  authenticate(id: string, token: string): Seat {
-    const room = this.get(id),
-      hash = Buffer.from(tokenHash(token), 'hex');
-    const seat = room.seats.find((s) => timingSafeEqual(Buffer.from(s.tokenHash, 'hex'), hash));
-    if (!seat) throw new GameError('房间凭证无效，请从原浏览器继续或加入新角色。', 401);
-    return seat;
-  }
-  async save(room: SavedRoom): Promise<void> {
-    const checked = validateRoom(room),
-      path = join(this.directory, `${checked.state.id}.json`);
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const file = await open(temporary, 'wx', 0o600);
-      try {
-        await file.writeFile(JSON.stringify(checked));
-        await file.sync();
-      } finally {
-        await file.close();
-      }
-      await rename(temporary, path);
-      this.rooms.set(checked.state.id, structuredClone(checked));
-    } finally {
-      await rm(temporary, { force: true });
+  private indexRecords(room: Campaign) {
+    const prior = new Map(
+      this.db
+        .prepare('SELECT id,fingerprint FROM record_index WHERE room=?')
+        .all(room.id)
+        .map((r) => [String(r.id), String(r.fingerprint)]),
+    );
+    for (const record of Object.values(room.world.records)) {
+      const fingerprint = hash(JSON.stringify(record));
+      if (prior.get(record.id) === fingerprint) continue;
+      const refs = new Set<string>();
+      const scan = (value: unknown) => {
+        if (typeof value === 'string' && room.world.records[value] && value !== record.id)
+          refs.add(value);
+        else if (value && typeof value === 'object') Object.values(value).forEach(scan);
+      };
+      scan(record.data);
+      this.db
+        .prepare(
+          'INSERT INTO record_index VALUES(?,?,?,?,?,?,?) ON CONFLICT(room,id) DO UPDATE SET kind=excluded.kind,name=excluded.name,fingerprint=excluded.fingerprint,updated=excluded.updated,refs=excluded.refs',
+        )
+        .run(
+          room.id,
+          record.id,
+          record.kind,
+          record.name,
+          fingerprint,
+          new Date().toISOString(),
+          JSON.stringify([...refs]),
+        );
     }
+    for (const id of prior.keys())
+      if (!room.world.records[id])
+        this.db.prepare('DELETE FROM record_index WHERE room=? AND id=?').run(room.id, id);
   }
-  async exclusive<T>(id: string, task: () => Promise<T>): Promise<T> {
-    if (this.locks.has(id)) throw new GameError('房间正在处理另一个操作，请稍后重试。', 409);
-    this.locks.add(id);
-    try {
-      return await task();
-    } finally {
-      this.locks.delete(id);
+  recordInfo(room: string, id: string) {
+    const row = this.db
+      .prepare('SELECT updated,refs FROM record_index WHERE room=? AND id=?')
+      .get(room, id);
+    return row
+      ? { id, updatedAt: String(row.updated), references: JSON.parse(String(row.refs)) as string[] }
+      : { id, staged: true };
+  }
+  seats(room: string): Seat[] {
+    return this.db
+      .prepare('SELECT data FROM seats WHERE room=?')
+      .all(room)
+      .map((r) => JSON.parse(String(r.data)));
+  }
+  addSeat(room: string, name: string, host: boolean): { seat: Seat; token: string } {
+    const token = randomBytes(32).toString('hex');
+    const seat: Seat = { id: uid('seat'), name, host, characters: [] };
+    this.db
+      .prepare('INSERT INTO seats VALUES(?,?,?,?)')
+      .run(seat.id, room, hash(token), JSON.stringify(seat));
+    return { seat, token };
+  }
+  saveSeat(seat: Seat) {
+    this.db.prepare('UPDATE seats SET data=? WHERE id=?').run(JSON.stringify(seat), seat.id);
+  }
+  authenticate(room: string, token: string): Seat {
+    const row = this.db
+      .prepare('SELECT data FROM seats WHERE room=? AND token=?')
+      .get(room, hash(token));
+    if (!row) throw new Fault('请从你的团桌入口重新加入。', 401);
+    return JSON.parse(String(row.data));
+  }
+  run(id: string): Run {
+    const row = this.db.prepare('SELECT data FROM runs WHERE id=?').get(id);
+    if (!row) throw new Fault('裁决记录不存在。', 404);
+    return JSON.parse(String(row.data));
+  }
+  active(room: string): Run | null {
+    const row = this.db
+      .prepare("SELECT data FROM runs WHERE room=? AND status!='completed'")
+      .get(room);
+    return row ? JSON.parse(String(row.data)) : null;
+  }
+  saveRun(run: Run) {
+    this.db
+      .prepare(
+        'INSERT INTO runs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data',
+      )
+      .run(run.id, run.roomId, run.status, JSON.stringify(run));
+  }
+  once<T>(scope: string, key: string, args: unknown, fn: () => T, atomic = true): T {
+    const fingerprint = hash(stableJson(args));
+    const row = this.db
+      .prepare('SELECT fingerprint,result FROM receipts WHERE scope=? AND key=?')
+      .get(scope, key);
+    if (row) {
+      if (row.fingerprint !== fingerprint && row.fingerprint !== hash(JSON.stringify(args)))
+        throw new Fault(
+          '这个 key 已完成另一项操作。同一工具的新操作需要新的 key；重试则保留原 key 和原内容。',
+          409,
+        );
+      return JSON.parse(String(row.result));
+    }
+    const execute = () => {
+      const result = fn();
+      this.db
+        .prepare('INSERT INTO receipts VALUES(?,?,?,?)')
+        .run(scope, key, fingerprint, JSON.stringify(result));
+      return result;
+    };
+    return atomic ? this.transaction(execute) : execute();
+  }
+  recordRoll(runId: string, id: string, args: unknown, roll: () => Roll): Roll {
+    const fingerprint = hash(stableJson(args));
+    const row = this.db
+      .prepare('SELECT fingerprint,data FROM rolls WHERE run=? AND id=?')
+      .get(runId, id);
+    if (row) {
+      if (row.fingerprint !== fingerprint && row.fingerprint !== hash(JSON.stringify(args)))
+        throw new Fault('检定依据已锁定，不能在看到骰子后更换。', 409);
+      return JSON.parse(String(row.data));
+    }
+    const result = roll();
+    this.db
+      .prepare('INSERT INTO rolls VALUES(?,?,?,?)')
+      .run(runId, id, fingerprint, JSON.stringify(result));
+    return result;
+  }
+  rolls(runId: string): Roll[] {
+    return this.db
+      .prepare('SELECT data FROM rolls WHERE run=? ORDER BY rowid')
+      .all(runId)
+      .map((r) => JSON.parse(String(r.data)));
+  }
+  roomRolls(room: string): Roll[] {
+    return this.db
+      .prepare(
+        'SELECT rolls.data FROM rolls JOIN runs ON runs.id=rolls.run WHERE runs.room=? ORDER BY rolls.rowid',
+      )
+      .all(room)
+      .map((r) => JSON.parse(String(r.data)));
+  }
+  audit(run: Run, data: unknown) {
+    this.db
+      .prepare('INSERT INTO audit(room,run,checkpoint,data,created) VALUES(?,?,?,?,?)')
+      .run(run.roomId, run.id, run.checkpoint, JSON.stringify(data), new Date().toISOString());
+  }
+  recentMovements(room: string) {
+    return this.db
+      .prepare('SELECT data FROM audit WHERE room=? ORDER BY seq DESC LIMIT 12')
+      .all(room)
+      .flatMap((r) => JSON.parse(String(r.data)).movements ?? [])
+      .slice(0, 12);
+  }
+  close() {
+    this.db.close();
+    if (this.lock) {
+      unlinkSync(this.lock);
+      this.lock = undefined;
     }
   }
 }
