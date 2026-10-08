@@ -1,0 +1,8 @@
+retry: 2000
+
+event: meta
+data: {"type":"meta","data":"{\"promptBytes\":67,\"character\":null}","ts":1777300803190}
+
+event: start
+data: {"type":"start","data":"opencode run -c …","ts":1777300803190}
+

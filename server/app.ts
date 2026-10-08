@@ -11,6 +11,8 @@ import { Library } from './library.js';
 import { GameTools, descriptions, schemas } from './tools.js';
 import { project } from './projection.js';
 import { DshDirector, type Director } from './dsh.js';
+import { ClaudeDirector } from './claude-director.js';
+import { registerMonitorRoutes } from './monitor.js';
 import type { Campaign, Run, Seat, Intent } from '../shared/types.js';
 
 export function createApp(
@@ -38,7 +40,24 @@ export function createApp(
   };
   const director =
     options.director?.(store, library, notify) ??
-    new DshDirector(store, library, directory, notify);
+    (() => {
+      const provider = process.env.AI_PROVIDER ?? 'dsh';
+      if (provider === 'claude') {
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) throw new Error('ANTHROPIC_API_KEY required when AI_PROVIDER=claude');
+        return new ClaudeDirector(
+          store,
+          library,
+          {
+            apiKey,
+            model: process.env.CLAUDE_MODEL,
+            baseURL: process.env.ANTHROPIC_BASE_URL,
+          },
+          notify,
+        );
+      }
+      return new DshDirector(store, library, directory, notify);
+    })();
   const tools = new GameTools(store, library, notify);
   const auth = (req: FastifyRequest) => {
     const id = z
@@ -536,6 +555,11 @@ export function createApp(
         : reply.sendFile('index.html'),
     );
   }
+  // Register monitor routes
+  if (process.env.MONITOR_TOKEN) {
+    registerMonitorRoutes(app, store, director);
+  }
+
   app.addHook('onClose', async () => {
     await director.close();
     for (const set of streams.values()) for (const s of set) s.reply.raw.end();
